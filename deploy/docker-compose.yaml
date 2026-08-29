@@ -9,7 +9,7 @@
 # All services use network_mode: host, so on the collector (10.0.0.210):
 #   * PostgreSQL  -> 127.0.0.1:55432
 #   * nfacctd     -> UDP :2055   (point pfSense/softflowd NetFlow here)
-#   * analyzer    -> http://10.0.0.210:8080  and  UDP/TCP :5514 (Suricata EVE syslog)
+#   * analyzer    -> http://10.0.0.210:8090  and  UDP/TCP :5514 (Suricata EVE syslog)
 #
 # To reuse an EXISTING ./postgres_data, put it next to this file (or change the volume path).
 # Init scripts in ./initdb only run when postgres_data is empty; the analyzer adds its own
@@ -78,11 +78,11 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://pmacct:pmacctpass@127.0.0.1:55432/pmacct?sslmode=disable
-      LISTEN_ADDR: ":8080"         # UI at http://10.0.0.210:8080
+      LISTEN_ADDR: ":8090"         # UI at http://10.0.0.210:8090  (8080 is taken on this host)
       # Internal ranges + the WAN address (drop the /32 once softflowd captures on the LAN side).
       LOCAL_NETWORKS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,174.54.200.232/32
       GATEWAYS: 10.0.0.1           # pfSense — exempt from DNS/beaconing rules
-      PUBLIC_URL: http://10.0.0.210:8080
+      PUBLIC_URL: http://10.0.0.210:8090
       ENRICH_ENABLED: "true"
       ENRICH_INTERVAL: 5m
       ENRICH_LOOKBACK: 24h

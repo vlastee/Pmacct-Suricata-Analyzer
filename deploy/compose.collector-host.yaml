@@ -22,11 +22,11 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://pmacct:pmacctpass@127.0.0.1:55432/pmacct?sslmode=disable
-      LISTEN_ADDR: ":8080"         # UI at http://10.0.0.210:8080
+      LISTEN_ADDR: ":8090"         # UI at http://10.0.0.210:8090  (8080 is taken on this host)
       # Internal ranges + the WAN address (drop the /32 once softflowd captures on the LAN side).
       LOCAL_NETWORKS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,174.54.200.232/32
       GATEWAYS: 10.0.0.1           # pfSense — exempt from DNS/beaconing rules
-      PUBLIC_URL: http://10.0.0.210:8080
+      PUBLIC_URL: http://10.0.0.210:8090
       # Enrichment
       ENRICH_ENABLED: "true"
       ENRICH_INTERVAL: 5m

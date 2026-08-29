@@ -58,7 +58,7 @@ docker compose up -d --build
 ```
 
 All services use `network_mode: host`, so on the collector (10.0.0.210): PostgreSQL on `:55432`,
-`nfacctd` NetFlow on UDP `:2055` (point pfSense/softflowd here), the UI on `http://10.0.0.210:8080`,
+`nfacctd` NetFlow on UDP `:2055` (point pfSense/softflowd here), the UI on `http://10.0.0.210:8090`,
 and the Suricata EVE syslog listener on `:5514`. pmacct's config lives in
 [`deploy/nfacctd.conf`](deploy/nfacctd.conf) and the schema in [`deploy/initdb/`](deploy/initdb/)
 (runs only on a fresh `postgres_data`; the analyzer adds its own tables at runtime and never
