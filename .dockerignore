@@ -1,0 +1,11 @@
+# Keep the Docker build context small — the image rebuilds these itself.
+frontend/node_modules
+frontend/dist
+backend/bin
+**/*.log
+.git
+deploy/postgres_data
+deploy/grafana_data
+deploy/*.env
+.env
+.claude

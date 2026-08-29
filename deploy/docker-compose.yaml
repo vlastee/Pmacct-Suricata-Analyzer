@@ -1,0 +1,105 @@
+# Self-contained stack: PostgreSQL + pmacct nfacctd + retention + the analyzer, in one project.
+#
+# Run from THIS directory (deploy/) so the relative paths below resolve here:
+#
+#     cp analyzer.env.example analyzer.env      # then put your VT_API_KEY etc. in it
+#     docker compose up -d --build
+#
+# The analyzer image is built from this repository (build context is the parent dir, "..").
+# All services use network_mode: host, so on the collector (10.0.0.210):
+#   * PostgreSQL  -> 127.0.0.1:55432
+#   * nfacctd     -> UDP :2055   (point pfSense/softflowd NetFlow here)
+#   * analyzer    -> http://10.0.0.210:8080  and  UDP/TCP :5514 (Suricata EVE syslog)
+#
+# To reuse an EXISTING ./postgres_data, put it next to this file (or change the volume path).
+# Init scripts in ./initdb only run when postgres_data is empty; the analyzer adds its own
+# tables at runtime and never touches pmacct's.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: pmacct-postgres
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DB: pmacct
+      POSTGRES_USER: pmacct
+      POSTGRES_PASSWORD: pmacctpass
+      PGPORT: 55432
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 55432 -U pmacct -d pmacct"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  nfacctd:
+    image: pmacct/nfacctd:latest
+    container_name: pmacct-nfacctd
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./nfacctd.conf:/etc/pmacct/nfacctd.conf:ro
+
+  retention:
+    image: postgres:16
+    container_name: pmacct-retention
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: pmacctpass
+    command: >
+      bash -lc '
+        while true; do
+          psql -h 127.0.0.1 -p 55432 -U pmacct -d pmacct \
+            -c "DELETE FROM acct WHERE stamp_inserted < NOW() - INTERVAL '\''30 days'\'';";
+          sleep 86400;
+        done
+      '
+
+  analyzer:
+    build:
+      context: ..                  # repository root (holds Containerfile, backend/, frontend/)
+      dockerfile: Containerfile
+    image: pmacct-analyzer:latest
+    container_name: pmacct-analyzer
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://pmacct:pmacctpass@127.0.0.1:55432/pmacct?sslmode=disable
+      LISTEN_ADDR: ":8080"         # UI at http://10.0.0.210:8080
+      # Internal ranges + the WAN address (drop the /32 once softflowd captures on the LAN side).
+      LOCAL_NETWORKS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,174.54.200.232/32
+      GATEWAYS: 10.0.0.1           # pfSense — exempt from DNS/beaconing rules
+      PUBLIC_URL: http://10.0.0.210:8080
+      ENRICH_ENABLED: "true"
+      ENRICH_INTERVAL: 5m
+      ENRICH_LOOKBACK: 24h
+      # VirusTotal free public API limits (key goes in analyzer.env)
+      VT_RATE_LIMIT: 15s
+      VT_DAILY_QUOTA: "500"
+      VT_MONTHLY_QUOTA: "15500"
+      # Detection + threat feeds (feeds need outbound HTTPS to abuse.ch/Spamhaus/etc.)
+      RULES_ENABLED: "true"
+      THREAT_FEEDS_INTERVAL: 1h
+      # Suricata EVE ingest — binds host UDP+TCP :5514, where pfSense sends its syslog.
+      SURICATA_LISTEN: ":5514"
+      # Notifications: minimum severity delivered; configure a channel in analyzer.env.
+      NOTIFY_MIN_SEVERITY: warning
+      # Authentication is ON by default: first login is admin/admin and forces a password change.
+      # network_mode: host sees the real client IP, so keep TRUST_PROXY off.
+      AUTH_ENABLED: "true"
+      TRUST_PROXY: "false"
+    env_file:
+      - ./analyzer.env             # VT_API_KEY, optional ABUSEIPDB_KEY / NOTIFY_* — see analyzer.env.example

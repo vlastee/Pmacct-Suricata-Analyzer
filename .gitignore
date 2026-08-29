@@ -1,0 +1,8 @@
+.env
+frontend/node_modules/
+frontend/dist/
+backend/bin/
+*.log
+deploy/postgres_data/
+deploy/grafana_data/
+deploy/analyzer.env
