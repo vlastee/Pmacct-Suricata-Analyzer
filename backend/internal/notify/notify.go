@@ -42,12 +42,56 @@ type Dispatcher struct {
 	Channels []Channel
 	Now      func() time.Time
 
-	mu      sync.Mutex
-	pending []db.Alert
-	sent    int64
-	failed  int64
-	last    time.Time
-	lastErr string
+	mu          sync.Mutex
+	pending     []db.Alert
+	sent        int64
+	failed      int64
+	last        time.Time
+	lastErr     string
+	minSeverity string // runtime override of Cfg.NotifyMinSeverity, persisted in settings["notify"]
+}
+
+// notifySettings is what the UI can change at runtime (settings["notify"]).
+type notifySettings struct {
+	MinSeverity string `json:"min_severity,omitempty"`
+}
+
+// MinSeverity returns the effective minimum severity: the persisted override, else NOTIFY_MIN_SEVERITY.
+func (d *Dispatcher) MinSeverity() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.minSeverity != "" {
+		return d.minSeverity
+	}
+	return d.Cfg.NotifyMinSeverity
+}
+
+// SetMinSeverity changes the minimum severity delivered and persists it.
+func (d *Dispatcher) SetMinSeverity(ctx context.Context, sev string) error {
+	sev = strings.ToLower(strings.TrimSpace(sev))
+	if db.SeverityRank(sev) == 0 {
+		return fmt.Errorf("invalid severity %q (info, warning or critical)", sev)
+	}
+	d.mu.Lock()
+	d.minSeverity = sev
+	d.mu.Unlock()
+	if d.DB == nil {
+		return nil
+	}
+	return d.DB.SetSetting(ctx, "notify", notifySettings{MinSeverity: sev})
+}
+
+// loadSettings applies the persisted override, if any.
+func (d *Dispatcher) loadSettings(ctx context.Context) {
+	if d.DB == nil {
+		return
+	}
+	var s notifySettings
+	if ok, err := d.DB.GetSetting(ctx, "notify", &s); err == nil && ok && db.SeverityRank(s.MinSeverity) > 0 {
+		d.mu.Lock()
+		d.minSeverity = s.MinSeverity
+		d.mu.Unlock()
+	}
 }
 
 // NewDispatcher builds channels from config.
@@ -56,6 +100,7 @@ func NewDispatcher(d *db.DB, cfg *config.Config, client *http.Client) *Dispatche
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	disp := &Dispatcher{DB: d, Cfg: cfg, Now: time.Now}
+	disp.loadSettings(context.Background())
 	if cfg.NotifyWebhookURL != "" {
 		disp.Channels = append(disp.Channels, &Webhook{URL: cfg.NotifyWebhookURL, Client: client})
 	}
@@ -103,7 +148,11 @@ type Stats struct {
 func (d *Dispatcher) Stats() Stats {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return Stats{Channels: d.ChannelNames(), MinSeverity: d.Cfg.NotifyMinSeverity, Digest: d.Cfg.NotifyDigest.String(),
+	min := d.minSeverity
+	if min == "" {
+		min = d.Cfg.NotifyMinSeverity
+	}
+	return Stats{Channels: d.ChannelNames(), MinSeverity: min, Digest: d.Cfg.NotifyDigest.String(),
 		QuietHours: d.Cfg.NotifyQuietHours, Pending: len(d.pending), Sent: d.sent, Failed: d.failed, LastSent: d.last, LastError: d.lastErr}
 }
 
@@ -134,7 +183,7 @@ func (d *Dispatcher) Notify(ctx context.Context, alerts []db.Alert) {
 	if len(d.Channels) == 0 {
 		return
 	}
-	min := db.SeverityRank(d.Cfg.NotifyMinSeverity)
+	min := db.SeverityRank(d.MinSeverity())
 	var keep []db.Alert
 	for _, a := range alerts {
 		if db.SeverityRank(a.Severity) >= min {
@@ -162,7 +211,7 @@ func (d *Dispatcher) Flush(ctx context.Context) {
 	batch := d.pending
 	d.pending = nil
 	d.mu.Unlock()
-	msg := d.render(batch)
+	msg := d.render(ctx, batch)
 	var ids []int64
 	for _, a := range batch {
 		ids = append(ids, a.ID)
@@ -224,41 +273,61 @@ func (d *Dispatcher) SendTest(ctx context.Context) map[string]string {
 	return out
 }
 
-func (d *Dispatcher) render(alerts []db.Alert) Message {
+// maxBodyChars keeps a batch under Telegram's 4096-character message limit with room for the link.
+const maxBodyChars = 3600
+
+// render formats a batch. Addresses are shown with their nicknames and each alert gets a line of
+// context about the peer (and about the host when it has no nickname) from enrichment data.
+func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 	top := db.SevInfo
 	for _, a := range alerts {
 		if db.SeverityRank(a.Severity) > db.SeverityRank(top) {
 			top = a.Severity
 		}
 	}
+	cards := d.cards(ctx, alerts)
 	var b strings.Builder
 	title := ""
 	if len(alerts) == 1 {
 		a := alerts[0]
-		title = fmt.Sprintf("[%s] %s", strings.ToUpper(a.Severity), a.Title)
+		title = fmt.Sprintf("[%s] %s", strings.ToUpper(a.Severity), labelIPs(a.Title, cards))
 	} else {
 		title = fmt.Sprintf("[%s] %d new alerts", strings.ToUpper(top), len(alerts))
 	}
 	for i, a := range alerts {
-		if i >= 20 {
+		if i >= 20 || b.Len() > maxBodyChars {
 			fmt.Fprintf(&b, "… and %d more\n", len(alerts)-i)
 			break
 		}
-		who := ""
-		if a.Host != nil {
-			who = *a.Host
-			if a.HostName != nil {
+		text := labelIPs(a.Title, cards)
+		fmt.Fprintf(&b, "• %s %s — %s", strings.ToUpper(a.Severity[:1]), a.Rule, text)
+		if a.Host != nil && *a.Host != "" && !strings.Contains(text, *a.Host) {
+			who := *a.Host
+			if c := cards[who]; c != nil {
+				who = c.Label()
+			} else if a.HostName != nil {
 				who = *a.HostName + " (" + who + ")"
 			}
-		}
-		fmt.Fprintf(&b, "• %s %s — %s", strings.ToUpper(a.Severity[:1]), a.Rule, a.Title)
-		if who != "" && !strings.Contains(a.Title, who) {
 			fmt.Fprintf(&b, " [%s]", who)
 		}
 		if a.Count > 1 {
 			fmt.Fprintf(&b, " (x%d)", a.Count)
 		}
 		b.WriteString("\n")
+		if a.Host != nil {
+			if c := cards[*a.Host]; c != nil && (c.Nick == "" || c.Note != "") {
+				if det := c.Detail(); det != "" {
+					fmt.Fprintf(&b, "   ↳ %s: %s\n", *a.Host, det)
+				}
+			}
+		}
+		if a.Peer != nil {
+			if c := cards[*a.Peer]; c != nil {
+				if det := c.Detail(); det != "" {
+					fmt.Fprintf(&b, "   ↳ %s: %s\n", c.Label(), det)
+				}
+			}
+		}
 	}
 	link := ""
 	if d.Cfg.PublicURL != "" {

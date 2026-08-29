@@ -3,10 +3,12 @@
   import { flag } from '../format'
   import { router } from '../router.svelte'
   import RiskDot from './RiskDot.svelte'
+  import { exclusions } from '../exclusions.svelte'
   let { ip, local = false, info = null, link = true, nickname = null, names = [], risk = null }:
     { ip: string; local?: boolean; info?: IPInfo | null; link?: boolean; nickname?: string | null; names?: string[]; risk?: HostRisk | null } = $props()
   let primaryName = $derived(names && names.length ? names[0] : null)
   let vtBad = $derived(info?.vt && ((info.vt.malicious ?? 0) > 0 || (info.vt.suspicious ?? 0) > 0))
+  let trusted = $derived(exclusions.match(ip, info?.hostname ? [info.hostname, ...names] : names))
 </script>
 
 <span class="ipl">
@@ -15,6 +17,7 @@
   {#if link}<a class="mono" class:dim={!!nickname} href={router.href(`/hosts/${ip}`)}>{ip}</a>{:else}<span class="mono">{ip}</span>{/if}
   {#if primaryName && !nickname}<span class="dns small muted" title={names.join('\n')}>{primaryName}{#if names.length > 1} +{names.length - 1}{/if}</span>{/if}
   {#if local}<span class="badge local">local</span>{/if}
+  {#if trusted}<span class="badge good" title="excluded from alerts by pattern {trusted.pattern}">trusted</span>{/if}
   {#if vtBad}<span class="badge critical" title="VirusTotal: {info?.vt?.malicious} malicious, {info?.vt?.suspicious} suspicious">⚠ {info?.vt?.malicious}/{info?.vt?.suspicious}</span>{/if}
   {#if info}
     <span class="meta small muted">

@@ -32,6 +32,11 @@
     msg = ''
     try { await api.enrichmentRun(); msg = 'Pass queued'; setTimeout(load, 1500) } catch (e: any) { msg = e.message }
   }
+  let sevMsg = $state<string | null>(null)
+  async function setMinSeverity(sev: string) {
+    sevMsg = 'saving…'
+    try { const st = await api.notifySettings(sev); sys.notifications = st; sevMsg = `alerts at ${st.min_severity} and above are sent` } catch (e: any) { sevMsg = e.message }
+  }
   async function testNotify() {
     testMsg = 'sending…'
     try { const r = await api.notifyTest(); testMsg = Object.entries(r.results).map(([k, v]) => `${k}: ${v}`).join(' · ') } catch (e: any) { testMsg = e.message }
@@ -79,7 +84,15 @@
         <h3>Notifications</h3>
         {#if sys.notifications?.channels?.length}
           <div class="row" style="gap:.3rem">{#each sys.notifications.channels as c}<span class="badge good">{c}</span>{/each}</div>
-          <div class="small muted" style="margin-top:.4rem">min severity {sys.notifications.min_severity} · {sys.notifications.digest === '0s' ? 'immediate' : 'digest ' + sys.notifications.digest}{#if sys.notifications.quiet_hours} · quiet {sys.notifications.quiet_hours}{/if} · {fmtNum(sys.notifications.sent)} sent</div>
+          <div class="row small muted" style="margin-top:.4rem">
+            <label class="row" style="gap:.3rem" title="Alerts at this severity and above are delivered; lower ones are only shown in the UI">send
+              <select value={sys.notifications.min_severity} onchange={(e) => setMinSeverity(e.currentTarget.value)}>
+                <option value="critical">critical only</option><option value="warning">warning and above</option><option value="info">everything (info+)</option>
+              </select>
+            </label>
+            · {sys.notifications.digest === '0s' ? 'immediate' : 'digest ' + sys.notifications.digest}{#if sys.notifications.quiet_hours} · quiet {sys.notifications.quiet_hours}{/if} · {fmtNum(sys.notifications.sent)} sent
+          </div>
+          {#if sevMsg}<div class="small muted" style="margin-top:.3rem">{sevMsg}</div>{/if}
           <button class="small" style="margin-top:.5rem" onclick={testNotify}>Send test</button>
           {#if testMsg}<div class="small muted" style="margin-top:.3rem">{testMsg}</div>{/if}
         {:else}<div class="muted small">No channels configured (set NOTIFY_* variables).</div>{/if}

@@ -505,7 +505,8 @@ func (e *Engine) evaluate(ctx context.Context, r *Rule) ([]db.Finding, effective
 		}
 		kept = append(kept, f)
 	}
-	return kept, ef, nil
+	kept, err = e.applyExclusions(ctx, kept)
+	return kept, ef, err
 }
 
 func defaultTitle(r *Rule, f db.Finding) string {
@@ -654,6 +655,11 @@ func (e *Engine) RaiseIDS(ctx context.Context, f db.Finding) error {
 		return nil
 	}
 	f.Rule = "ids"
+	if kept, err := e.applyExclusions(ctx, []db.Finding{f}); err != nil {
+		return err
+	} else if len(kept) == 0 {
+		return nil
+	}
 	a, err := e.DB.UpsertAlert(ctx, f)
 	if err != nil {
 		return err

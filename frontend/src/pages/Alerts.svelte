@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Alert } from '../lib/api'
   import { router } from '../lib/router.svelte'
+  import { exclusions } from '../lib/exclusions.svelte'
   import { fmtAgo, fmtTime } from '../lib/format'
   import Severity from '../lib/components/Severity.svelte'
   import IPLabel from '../lib/components/IPLabel.svelte'
@@ -27,6 +28,19 @@
   }
   $effect(() => { void reloadKey; void q.toString(); load() })
 
+  async function trustToggle(ip: string, current?: string) {
+    try {
+      if (current) {
+        const e = exclusions.items.find(x => x.pattern === current)
+        if (!e) return
+        if (e.kind !== 'ip' && !confirm(`Remove "${e.pattern}" from the trusted list?`)) return
+        await exclusions.remove(e.id)
+      } else {
+        await exclusions.add(ip)
+      }
+      await load()
+    } catch (e: any) { error = e.message }
+  }
   async function act(a: Alert, action: 'ack' | 'resolve' | 'reopen') {
     try { await api.alertAction(a.id, action); await load() } catch (e: any) { error = e.message }
   }
@@ -82,6 +96,12 @@
               {#if a.host} · <a href={router.href(`/hosts/${a.host}`)}>host page →</a>{/if}
               {#if a.peer} · <a href={router.href(`/hosts/${a.peer}`)}>peer page →</a>{/if}
               {#if a.details?.ids_event_id} · <a href={router.href('/ids', { event: String(a.details.ids_event_id) })}>IDS event →</a>{/if}</div>
+            <div class="row small" style="margin-top:.4rem; gap:.4rem">
+              <span class="muted">trusted list:</span>
+              {#if a.host}<button class="small" onclick={() => trustToggle(a.host!, a.host_excluded)}>{a.host_excluded ? `include ${a.host} (now excluded by ${a.host_excluded})` : `exclude host ${a.host}`}</button>{/if}
+              {#if a.peer}<button class="small" onclick={() => trustToggle(a.peer!, a.peer_excluded)}>{a.peer_excluded ? `include ${a.peer} (now excluded by ${a.peer_excluded})` : `exclude peer ${a.peer}`}</button>{/if}
+              <span class="muted">excluding an address resolves its open alerts and stops every rule alerting on it</span>
+            </div>
           </td></tr>
         {/if}
       {:else}

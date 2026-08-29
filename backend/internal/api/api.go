@@ -65,6 +65,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/nicknames/{ip}", s.getNickname)
 	mux.HandleFunc("PUT /api/v1/nicknames/{ip}", s.setNickname)
 	mux.HandleFunc("DELETE /api/v1/nicknames/{ip}", s.deleteNickname)
+	mux.HandleFunc("GET /api/v1/exclusions", s.listExclusions)
+	mux.HandleFunc("GET /api/v1/exclusions/match", s.matchExclusion)
+	mux.HandleFunc("POST /api/v1/exclusions", s.adminOnly(s.addExclusion))
+	mux.HandleFunc("DELETE /api/v1/exclusions/{id}", s.adminOnly(s.deleteExclusion))
 	mux.HandleFunc("GET /api/v1/enrichment/status", s.enrichmentStatus)
 	mux.HandleFunc("POST /api/v1/enrichment/run", s.enrichmentRun)
 	mux.HandleFunc("GET /api/v1/alerts", s.listAlerts)
@@ -84,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ips/{ip}/names", s.ipNames)
 	mux.HandleFunc("GET /api/v1/system/status", s.systemStatus)
 	mux.HandleFunc("POST /api/v1/notify/test", s.notifyTest)
+	mux.HandleFunc("PUT /api/v1/notify/settings", s.adminOnly(s.notifySettings))
 	mux.HandleFunc("GET /api/v1/kinds", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": db.DeviceKinds})
 	})
@@ -832,6 +837,10 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if err := s.annotateExclusions(r.Context(), items); err != nil {
+		s.fail(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "limit": o.Limit, "offset": o.Offset})
 }
 
@@ -1094,6 +1103,9 @@ func (s *Server) idsSummary(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"items": items, "total": total, "enabled": s.Suricata != nil}
 	if s.Suricata != nil {
 		out["listener"] = s.Suricata.Stats()
+		if last, err := s.DB.LastIDSActivity(r.Context()); err == nil && last != nil {
+			out["last_stored_event"] = last
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -1150,6 +1162,142 @@ func (s *Server) systemStatus(w http.ResponseWriter, r *http.Request) {
 		out["lanes"] = s.Worker.Stats(ctx)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// notifySettings changes runtime notification settings (currently the minimum severity).
+func (s *Server) notifySettings(w http.ResponseWriter, r *http.Request) {
+	if s.Notifier == nil {
+		writeErr(w, http.StatusServiceUnavailable, "notifications not configured")
+		return
+	}
+	var body struct {
+		MinSeverity string `json:"min_severity"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := s.Notifier.SetMinSeverity(r.Context(), body.MinSeverity); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.Notifier.Stats())
+}
+
+// ---- alert exclusions (global trusted list) ----
+
+// annotateExclusions fills HostExcluded / PeerExcluded so the UI can show status inline.
+func (s *Server) annotateExclusions(ctx context.Context, items []db.Alert) error {
+	if len(items) == 0 {
+		return nil
+	}
+	set, err := s.DB.LoadExclusions(ctx)
+	if err != nil || set.Empty() {
+		return err
+	}
+	names := map[string][]string{}
+	if set.HasNames() {
+		seen := map[string]bool{}
+		var ips []string
+		for _, a := range items {
+			for _, p := range []*string{a.Host, a.Peer} {
+				if p != nil && *p != "" && !seen[*p] {
+					seen[*p] = true
+					ips = append(ips, *p)
+				}
+			}
+		}
+		if names, err = s.DB.NamesForIPs(ctx, ips); err != nil {
+			return err
+		}
+	}
+	for i := range items {
+		if h := items[i].Host; h != nil {
+			items[i].HostExcluded, _ = set.Match(*h, names[*h])
+		}
+		if p := items[i].Peer; p != nil {
+			items[i].PeerExcluded, _ = set.Match(*p, names[*p])
+		}
+	}
+	return nil
+}
+
+func (s *Server) listExclusions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.DB.ListExclusions(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// addExclusion stores a pattern and resolves the open alerts it now covers.
+func (s *Server) addExclusion(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Pattern string `json:"pattern"`
+		Note    string `json:"note"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	item, err := s.DB.AddExclusion(r.Context(), body.Pattern, body.Note)
+	if err != nil {
+		if _, _, nerr := db.NormalizeExclusion(body.Pattern); nerr != nil {
+			writeErr(w, http.StatusBadRequest, nerr.Error())
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	resolved, err := s.DB.ResolveExcludedAlerts(r.Context(), db.NewExclusionSet([]db.Exclusion{*item}))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"item": item, "resolved": resolved})
+}
+
+func (s *Server) deleteExclusion(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ok, err := s.DB.DeleteExclusion(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no such exclusion")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+// matchExclusion answers "is this address trusted, and by which pattern?" (names included).
+func (s *Server) matchExclusion(w http.ResponseWriter, r *http.Request) {
+	ip, ok := parseIP(w, r.URL.Query().Get("ip"))
+	if !ok {
+		return
+	}
+	set, err := s.DB.LoadExclusions(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	var names []string
+	if set.HasNames() {
+		m, err := s.DB.NamesForIPs(r.Context(), []string{ip})
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		names = m[ip]
+	}
+	pattern, excluded := set.Match(ip, names)
+	writeJSON(w, http.StatusOK, map[string]any{"ip": ip, "excluded": excluded, "pattern": pattern})
 }
 
 func (s *Server) notifyTest(w http.ResponseWriter, r *http.Request) {

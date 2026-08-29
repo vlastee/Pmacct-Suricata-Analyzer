@@ -8,6 +8,7 @@
   import Loading from '../lib/components/Loading.svelte'
   import Th from '../lib/components/Th.svelte'
   import { Sorter } from '../lib/sort.svelte'
+  import { exclusions } from '../lib/exclusions.svelte'
   const peerSort = new Sorter('bytes')
   const portSort = new Sorter('bytes')
 
@@ -37,6 +38,39 @@
   let info = $derived(data?.host.info ?? null)
   let vt = $derived(info?.vt ?? null)
 
+  // trusted list (alert exclusions)
+  let exclMsg = $state('')
+  let serverMatch = $state<{ excluded: boolean; pattern: string } | null>(null)
+  $effect(() => { void ip; void exclusions.items; api.exclusionMatch(ip).then(m => (serverMatch = m)).catch(() => (serverMatch = null)) })
+  let trustedBy = $derived(serverMatch?.excluded ? serverMatch.pattern : exclusions.matchIP(ip)?.pattern ?? null)
+  async function trust(pattern: string) {
+    exclMsg = ''
+    try {
+      const r = await exclusions.add(pattern)
+      exclMsg = r.resolved ? `excluded · ${r.resolved} open alert${r.resolved === 1 ? '' : 's'} resolved` : 'excluded from alerts'
+      load()
+    } catch (e: any) { exclMsg = e.message }
+  }
+  async function untrust() {
+    const pat = trustedBy
+    const e = exclusions.items.find(x => x.pattern === pat)
+    if (!e) { exclMsg = 'covered by a pattern not in the list?'; return }
+    if (e.kind !== 'ip' && !confirm(`Remove the pattern "${e.pattern}" from the trusted list? It may cover other addresses too.`)) return
+    exclMsg = ''
+    try { await exclusions.remove(e.id); exclMsg = 'alerts enabled again' } catch (err: any) { exclMsg = err.message }
+  }
+  // Name-based suggestions: exact names and their parent-domain wildcards.
+  let nameSuggestions = $derived.by(() => {
+    const names = new Set<string>()
+    for (const n of [info?.hostname, ...(info?.names?.map(x => x.name) ?? []), ...(data?.host.names ?? [])]) if (n) names.add(n.replace(/\.$/, '').toLowerCase())
+    const out: string[] = []
+    for (const n of [...names].slice(0, 4)) {
+      out.push(n)
+      const parts = n.split('.')
+      if (parts.length > 2) out.push('*.' + parts.slice(-2).join('.'))
+    }
+    return [...new Set(out)].filter(p => !exclusions.items.some(e => e.pattern === p)).slice(0, 6)
+  })
   // nickname editor
   let editing = $state(false)
   let nickInput = $state('')
@@ -73,6 +107,12 @@
   {#if data?.kind && data.kind !== 'other'}<span class="badge">{data.kind}</span>{/if}
   {#if data?.host.risk}<span class="badge {data.host.risk.critical ? 'critical' : data.host.risk.warning ? 'warning' : ''}" title="risk score {data.host.risk.score}"><a href={router.href('/alerts', { host: ip })} style="color:inherit">risk {data.host.risk.score}</a></span>{/if}
   {#if info?.country_code}<span class="flag" style="font-size:1.3rem" title={info.country ?? ''}>{flag(info.country_code)}</span>{/if}
+  {#if trustedBy}<span class="badge good" title="excluded from alerts by pattern {trustedBy}">trusted · {trustedBy}</span>
+    <button class="small" onclick={untrust} title="Remove from the trusted list so rules alert on this address again">Include in alerts</button>
+  {:else}
+    <button class="small" onclick={() => trust(ip)} title="Never raise alerts involving this address (all rules, incl. VirusTotal/AbuseIPDB flags)">Exclude from alerts</button>
+  {/if}
+  {#if exclMsg}<span class="small muted">{exclMsg}</span>{/if}
   <span class="spacer"></span>
   <a href={router.href('/flows', { ip })}>Raw flows →</a>
   {#if !data?.host.local}
@@ -127,6 +167,11 @@
     </div>
     <div class="card">
       <h3>Identity</h3>
+      {#if !trustedBy && nameSuggestions.length}
+        <div class="row small" style="margin-bottom:.5rem; gap:.3rem"><span class="muted">trust by name:</span>
+          {#each nameSuggestions as p (p)}<button class="small" onclick={() => trust(p)} title="Exclude every address whose hostname matches {p}">{p}</button>{/each}
+        </div>
+      {/if}
       {#if info?.names?.length}
         <div class="small" style="margin-bottom:.5rem">Names: {#each info.names as n, i}{#if i}, {/if}<span class="mono" title="{n.source} · {n.hits}× · {fmtTime(n.last_seen)}">{n.name}</span>{/each}</div>
       {:else if h.names?.length}

@@ -100,7 +100,7 @@ services:
       # Suricata EVE ingest — binds host UDP+TCP :5514, where pfSense sends its syslog.
       SURICATA_LISTEN: ":5514"
       # Notifications: minimum severity delivered; configure a channel in analyzer.env.
-      NOTIFY_MIN_SEVERITY: warning
+      NOTIFY_MIN_SEVERITY: critical   # startup default; the Enrichment page can change it at runtime
       # Authentication is ON by default: first login is admin/admin and forces a password change.
       # network_mode: host sees the real client IP, so keep TRUST_PROXY off.
       AUTH_ENABLED: "true"

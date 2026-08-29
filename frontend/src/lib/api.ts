@@ -25,8 +25,9 @@ export interface Alert {
   id: number; rule: string; severity: string; host: string | null; host_nickname: string | null
   peer: string | null; peer_nickname: string | null; port: number | null; title: string; details: any
   count: number; first_seen: string; last_seen: string; state: string; acked_at: string | null
-  resolved_at: string | null; notified_at: string | null
+  resolved_at: string | null; notified_at: string | null; host_excluded?: string; peer_excluded?: string
 }
+export interface Exclusion { id: number; pattern: string; kind: 'ip' | 'cidr' | 'name'; note: string; created_at: string }
 export interface AlertSummary { open: number; acked: number; critical: number; warning: number; info: number; by_rule: Record<string, number>; last_24h: number }
 export interface RuleParam { name: string; description: string; default: any }
 export interface RuleInfo {
@@ -157,11 +158,18 @@ export const api = {
   previewCustomRule: (spec: CustomRuleSpec) =>
     request<{ findings: Finding[] }>('/api/v1/rules/custom/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec) }),
   idsEvents: (r: Range, o: { ip?: string; sid?: number; limit?: number } = {}) => request<{ items: IDSEvent[] }>(`/api/v1/ids/events${qs({ ...r, ...o })}`),
-  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener }>(`/api/v1/ids/summary${qs(r)}`),
+  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener; last_stored_event?: string }>(`/api/v1/ids/summary${qs(r)}`),
   idsEvent: (id: number) => request<IDSEvent>(`/api/v1/ids/events/${id}`),
   ipNames: (ip: string) => request<{ items: IPName[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/names`),
   systemStatus: () => request<any>('/api/v1/system/status'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
+  exclusions: () => request<{ items: Exclusion[] }>('/api/v1/exclusions'),
+  addExclusion: (pattern: string, note = '') =>
+    request<{ item: Exclusion; resolved: number }>('/api/v1/exclusions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pattern, note }) }),
+  deleteExclusion: (id: number) => request<{ deleted: number }>(`/api/v1/exclusions/${id}`, { method: 'DELETE' }),
+  exclusionMatch: (ip: string) => request<{ ip: string; excluded: boolean; pattern: string }>(`/api/v1/exclusions/match?ip=${encodeURIComponent(ip)}`),
+  notifySettings: (min_severity: string) =>
+    request<any>('/api/v1/notify/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ min_severity }) }),
   me: () => request<{ auth: boolean; user?: AuthUser; must_change_password?: boolean }>('/api/v1/auth/me'),
   login: (username: string, password: string) =>
     request<{ user: AuthUser; must_change_password: boolean }>('/api/v1/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) }),

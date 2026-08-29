@@ -12,6 +12,7 @@
   let sigs = $state<IDSSignatureStat[]>([])
   let enabled = $state(false)
   let listener = $state<IDSListener | null>(null)
+  let lastStored = $state<string | null>(null) // newest Suricata-derived row in the DB; survives restarts
   let error = $state<string | null>(null)
   let loading = $state(false)
   // Expanded row → full event (with raw EVE JSON) fetched on demand; a string is the fetch error.
@@ -31,7 +32,8 @@
     if (!listener) return null
     if (!listener.last_event) {
       const sinceStart = listener.started ? Date.now() - new Date(listener.started).getTime() : 0
-      return { level: sinceStart > QUIET_MS ? 'critical' : '', text: listener.started ? `nothing received since start ${fmtAgo(listener.started)}` : 'nothing received yet' }
+      const tail = lastStored ? ` · last stored event ${fmtAgo(lastStored)}` : ''
+      return { level: sinceStart > QUIET_MS ? 'critical' : '', text: (listener.started ? `nothing received since start ${fmtAgo(listener.started)}` : 'nothing received yet') + tail }
     }
     const idle = Date.now() - new Date(listener.last_event).getTime()
     if (idle > QUIET_MS) return { level: 'warning', text: `quiet — last event ${fmtAgo(listener.last_event)}` }
@@ -59,7 +61,7 @@
         api.idsEvents(r, { ip: q.get('ip') ?? undefined, sid: Number(q.get('sid') ?? 0) || undefined, limit: 300 }),
         api.idsSummary(r),
       ])
-      events = ev.items; sigs = sm.items; enabled = sm.enabled; listener = sm.listener ?? null
+      events = ev.items; sigs = sm.items; enabled = sm.enabled; listener = sm.listener ?? null; lastStored = sm.last_stored_event ?? null
       const id = Number(q.get('event') ?? 0)
       if (id > 0) {
         if (focus?.id !== id) {
@@ -96,7 +98,7 @@
     <div class="row small" style="margin-bottom:1rem">
       {#if health}<span class="badge {health.level}">{health.text}</span>{/if}
       <span class="muted">
-        listening on {listener.listen}{#if listener.started} since {fmtTime(listener.started)}{/if}
+        listening on {listener.listen}{#if listener.started}&nbsp;since {fmtTime(listener.started)}{/if}
         · {fmtCompact(listener.received)} events · {fmtCompact(listener.alerts)} alerts · {fmtCompact(listener.names)} names learned
         {#if listener.ignored}· {fmtCompact(listener.ignored)} non-Suricata syslog lines{/if}
         {#if listener.dropped}· <span class="secondary">{fmtCompact(listener.dropped)} dropped (DB errors)</span>{/if}

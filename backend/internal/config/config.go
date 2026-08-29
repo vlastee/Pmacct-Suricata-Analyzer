@@ -328,7 +328,7 @@ func Load() (*Config, error) {
 	c.NotifySMTPPass = env("NOTIFY_SMTP_PASS", "")
 	c.NotifySMTPFrom = env("NOTIFY_SMTP_FROM", "")
 	c.NotifySMTPTo = env("NOTIFY_SMTP_TO", "")
-	c.NotifyMinSeverity = env("NOTIFY_MIN_SEVERITY", "warning")
+	c.NotifyMinSeverity = env("NOTIFY_MIN_SEVERITY", "critical") // overridable at runtime on the Enrichment page
 	if c.NotifyDigest, err = envDuration("NOTIFY_DIGEST", 0); err != nil {
 		return nil, err
 	}

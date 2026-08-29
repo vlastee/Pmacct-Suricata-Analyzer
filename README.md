@@ -131,7 +131,7 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 | `THREAT_FEEDS` | abuse.ch, Spamhaus, Tor, CINS, … | `name=url,…` bulk IP/CIDR feeds (empty disables) |
 | `THREAT_FEEDS_INTERVAL` | `1h` | how often feeds are refreshed |
 | `SURICATA_LISTEN` | – | syslog listen address for Suricata EVE (e.g. `:5514`); empty disables |
-| `NOTIFY_MIN_SEVERITY` | `warning` | minimum severity delivered to notification channels |
+| `NOTIFY_MIN_SEVERITY` | `critical` | minimum severity delivered to notification channels (startup default; changeable on the Enrichment page) |
 | `NOTIFY_DIGEST` / `NOTIFY_QUIET_HOURS` / `NOTIFY_RENOTIFY_AFTER` | `0` / – / `24h` | batch window / silent hours (`23-7`) / re-notify interval |
 | `NOTIFY_NTFY_URL`, `NOTIFY_GOTIFY_*`, `NOTIFY_TELEGRAM_*`, `NOTIFY_SLACK_WEBHOOK_URL`, `NOTIFY_WEBHOOK_URL`, `NOTIFY_SMTP_*` | – | notification channels (configure any subset) |
 | `PUBLIC_URL` | – | base URL used in notification links |
@@ -238,6 +238,12 @@ HAVING SUM(bytes) > 1073741824
 API: `POST/PUT/DELETE /api/v1/rules/custom[/{name}]`, `POST /api/v1/rules/custom/preview`,
 `POST /api/v1/rules/{name}/run?dry=1`. Deleting a rule keeps the alerts it raised.
 
+**Trusted list** (Rules page, host pages, alert details): IPs, networks or hostname globs
+(`*.anthropic.com`) that never raise alerts from any rule — including VirusTotal/AbuseIPDB/feed
+hits — because you know what they are. Adding one resolves the open alerts it covers; IP labels
+show a `trusted` badge. API: `GET/POST /api/v1/exclusions`, `DELETE /api/v1/exclusions/{id}`,
+`GET /api/v1/exclusions/match?ip=`. Per-rule *exempt hosts* remain for narrower cases.
+
 **Alert lifecycle**: open → acked → resolved, and **resolved → open** again via *Reopen* (refused
 with 409 while a newer alert for the same finding is open). Alerts not seen for 7 days
 auto-resolve (a reopened alert gets a fresh 7 days).
@@ -248,9 +254,13 @@ DROP, the Tor exit list, CINS, ET compromised, and blocklist.de. Because pmacct 
 LAN *before* pfSense drops a packet, a **blocked** outbound attempt to a C2 still shows up as a
 one-way flow — so `threat_feed` + `one_way` catch malware even when the firewall stops it.
 
-**Notifications**: alerts at or above `NOTIFY_MIN_SEVERITY` are delivered to any configured
+**Notifications**: alerts at or above the minimum severity (default **critical**; `NOTIFY_MIN_SEVERITY`,
+or change it live on the Enrichment page — that choice is persisted and wins) are delivered to any configured
 channel — ntfy, Gotify, Telegram, Slack, a generic JSON webhook, or SMTP email. Supports immediate
 or digest delivery (`NOTIFY_DIGEST`), quiet hours (`NOTIFY_QUIET_HOURS`), and a re-notify interval.
+Messages name devices by their **nickname** (`petro-pc (10.0.0.115)`) and add a line of context per
+address from enrichment — hostname / learned name, country & city, organisation, hosting/proxy,
+VirusTotal / AbuseIPDB / GreyNoise verdicts, threat lists, device kind and note.
 "Send test" on the Enrichment page verifies delivery. New alerts are never lost during quiet hours —
 they're recorded and delivered when the window ends.
 

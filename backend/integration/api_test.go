@@ -13,6 +13,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/config"
 	"github.com/deezave/pmacct-analyzer/backend/internal/db"
 	"github.com/deezave/pmacct-analyzer/backend/internal/enrich"
+	"github.com/deezave/pmacct-analyzer/backend/internal/notify"
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
 	"github.com/deezave/pmacct-analyzer/backend/internal/suricata"
@@ -339,6 +342,134 @@ func TestPruneThreatLists(t *testing.T) {
 		t.Fatalf("retired list should be gone: %v", lists)
 	}
 	_, _ = e.db.DeleteThreatListsExcept(ctx, []string{"feodo"}) // leave the fixture state for other tests
+}
+
+func TestNotificationEnrichment(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	note := "lobby"
+	if _, err := e.db.SetNickname(ctx, "10.0.0.5", "Kiosk", &note, "iot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO ip_info (ip, hostname, country_code, city, as_org, is_hosting, status)
+VALUES ('198.51.100.7', 'evil.example', 'NL', 'Amsterdam', 'Bad Hosting BV', true, 'ok')
+ON CONFLICT (ip) DO UPDATE SET hostname = EXCLUDED.hostname, country_code = EXCLUDED.country_code, city = EXCLUDED.city, as_org = EXCLUDED.as_org, is_hosting = EXCLUDED.is_hosting`); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.ReplaceThreatList(ctx, "notiftest", []string{"198.51.100.0/24"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.db.DeleteThreatListsExcept(ctx, []string{"feodo"}) })
+
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+	}))
+	defer srv.Close()
+	cfg := *e.cfg
+	cfg.NotifyWebhookURL, cfg.NotifyMinSeverity, cfg.PublicURL = srv.URL, "warning", "http://x"
+	disp := notify.NewDispatcher(e.db, &cfg, srv.Client())
+	host, peer := "10.0.0.5", "198.51.100.7"
+	disp.Notify(ctx, []db.Alert{{ID: 1, Rule: "threat_feed", Severity: "critical", Host: &host, Peer: &peer,
+		Title: "10.0.0.5 talked to 198.51.100.7 (listed: notiftest)", Count: 3}})
+	mu.Lock()
+	defer mu.Unlock()
+	body, _ := got["body"].(string)
+	for _, want := range []string{"Kiosk (10.0.0.5) talked to 198.51.100.7", "(x3)", "↳ 10.0.0.5: iot · note: lobby",
+		"↳ 198.51.100.7: evil.example · NL, Amsterdam · Bad Hosting BV · hosting · listed: notiftest"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("notification body missing %q:\n%s", want, body)
+		}
+	}
+	if title, _ := got["title"].(string); !strings.Contains(title, "Kiosk (10.0.0.5)") {
+		t.Errorf("title not labelled: %q", title)
+	}
+}
+
+func TestExclusions(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alert_exclusions`)
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule IN ('excl_test', 'excl_rule')`)
+	t.Cleanup(func() {
+		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alert_exclusions`)
+		e.send(t, "DELETE", "/api/v1/rules/custom/excl_rule", nil, nil)
+	})
+	// An open alert involving 198.51.100.7 exists; trusting the /24 resolves it immediately.
+	host, peer := "10.0.0.5", "198.51.100.7"
+	a, err := e.db.UpsertAlert(ctx, db.Finding{Rule: "excl_test", Severity: "warning", Host: host, Peer: peer, Title: "t", Details: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var added struct {
+		Item     db.Exclusion `json:"item"`
+		Resolved int64        `json:"resolved"`
+	}
+	if code := e.send(t, "POST", "/api/v1/exclusions", map[string]any{"pattern": "198.51.100.0/24", "note": "lab range"}, &added); code != 201 {
+		t.Fatalf("add: http %d", code)
+	}
+	if added.Item.Kind != "cidr" || added.Item.Pattern != "198.51.100.0/24" || added.Resolved != 1 {
+		t.Fatalf("added: %+v", added)
+	}
+	got, _ := e.db.GetAlert(ctx, a.ID)
+	if got == nil || got.State != "resolved" {
+		t.Fatalf("existing alert should be resolved: %+v", got)
+	}
+	if code := e.send(t, "POST", "/api/v1/exclusions", map[string]any{"pattern": "not a host"}, nil); code != 400 {
+		t.Errorf("bad pattern: http %d, want 400", code)
+	}
+	// A rule that would flag the trusted peer raises nothing; another peer still alerts.
+	rule := map[string]any{"name": "excl_rule", "title": "excl", "kind": "sql", "severity": "warning", "interval": "1m", "window": "1h",
+		"sql": "SELECT '10.0.0.5' AS host, x AS peer FROM unnest(ARRAY['198.51.100.7','192.0.2.9']) AS x"}
+	if code := e.send(t, "POST", "/api/v1/rules/custom", rule, nil); code != 201 {
+		t.Fatalf("create rule: http %d", code)
+	}
+	var run struct {
+		Raised []db.Alert `json:"raised"`
+	}
+	if code := e.post(t, "/api/v1/rules/excl_rule/run", &run); code != 200 || len(run.Raised) != 1 || *run.Raised[0].Peer != "192.0.2.9" {
+		t.Fatalf("run with exclusion: http %d %+v", code, run.Raised)
+	}
+	// Name pattern: the surviving peer gets a hostname matching a glob → excluded on the next run,
+	// and the alert list shows why.
+	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO ip_info (ip, hostname, status) VALUES ('192.0.2.9', 'cdn7.trusted.example', 'ok') ON CONFLICT (ip) DO UPDATE SET hostname = EXCLUDED.hostname`); err != nil {
+		t.Fatal(err)
+	}
+	if code := e.send(t, "POST", "/api/v1/exclusions", map[string]any{"pattern": "*.trusted.example"}, &added); code != 201 || added.Item.Kind != "name" || added.Resolved != 1 {
+		t.Fatalf("add name pattern: http %d %+v", code, added)
+	}
+	if code := e.post(t, "/api/v1/rules/excl_rule/run", &run); code != 200 || len(run.Raised) != 0 {
+		t.Fatalf("run with name exclusion: http %d %+v", code, run.Raised)
+	}
+	var al struct {
+		Items []db.Alert `json:"items"`
+	}
+	e.get(t, "/api/v1/alerts?rule=excl_rule&state=all", &al)
+	if len(al.Items) != 1 || al.Items[0].PeerExcluded != "*.trusted.example" || al.Items[0].HostExcluded != "" {
+		t.Fatalf("alert annotation: %+v", al.Items)
+	}
+	var m struct {
+		Excluded bool   `json:"excluded"`
+		Pattern  string `json:"pattern"`
+	}
+	e.get(t, "/api/v1/exclusions/match?ip=192.0.2.9", &m)
+	if !m.Excluded || m.Pattern != "*.trusted.example" {
+		t.Errorf("match by name: %+v", m)
+	}
+	e.get(t, "/api/v1/exclusions/match?ip=192.0.2.10", &m)
+	if m.Excluded {
+		t.Errorf("unrelated ip matched: %+v", m)
+	}
+	// Delete → the rule alerts again.
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/exclusions/%d", added.Item.ID), nil, nil); code != 200 {
+		t.Fatalf("delete: http %d", code)
+	}
+	if code := e.post(t, "/api/v1/rules/excl_rule/run", &run); code != 200 || len(run.Raised) != 1 {
+		t.Fatalf("run after delete: http %d %+v", code, run.Raised)
+	}
 }
 
 func TestReopenAlert(t *testing.T) {

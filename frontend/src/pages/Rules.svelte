@@ -5,6 +5,8 @@
   import Severity from '../lib/components/Severity.svelte'
   import Loading from '../lib/components/Loading.svelte'
   import RuleEditor from '../lib/components/RuleEditor.svelte'
+  import { exclusions } from '../lib/exclusions.svelte'
+  import { fmtTime } from '../lib/format'
 
   let { reloadKey }: { reloadKey: number } = $props()
   let items = $state<RuleInfo[]>([])
@@ -74,6 +76,21 @@
   async function preview(r: RuleInfo) {
     msg[r.name] = 'previewing…'
     try { previews[r.name] = (await api.previewRule(r.name)).findings; msg[r.name] = `${previews[r.name].length} finding(s) right now — nothing raised` } catch (e: any) { msg[r.name] = e.message }
+  }
+  // trusted list
+  let exclPattern = $state('')
+  let exclNote = $state('')
+  let exclMsg = $state('')
+  async function addExclusion(e: Event) {
+    e.preventDefault(); exclMsg = ''
+    try {
+      const r = await exclusions.add(exclPattern, exclNote)
+      exclMsg = `added ${r.item.pattern} (${r.item.kind})` + (r.resolved ? ` · ${r.resolved} open alert${r.resolved === 1 ? '' : 's'} resolved` : '')
+      exclPattern = ''; exclNote = ''
+    } catch (err: any) { exclMsg = err.message }
+  }
+  async function removeExclusion(id: number) {
+    try { await exclusions.remove(id); exclMsg = 'removed' } catch (err: any) { exclMsg = err.message }
   }
   function newRule() {
     creating = { name: '', title: '', description: '', kind: 'sql', sql: '', severity: 'warning', interval: '5m', window: '1h', enabled: true, exempt_hosts: [] }
@@ -183,6 +200,29 @@
       {/if}
     </div>
   {/each}
+</div>
+
+<div class="card" style="margin-top:1rem">
+  <h3>Trusted list — excluded from alerts</h3>
+  <p class="muted small">Addresses here never raise alerts from any rule, even when VirusTotal, AbuseIPDB or a threat feed flags them. Use an IP (<span class="mono">10.0.0.5</span>), a network (<span class="mono">203.0.113.0/24</span>) or a hostname pattern matched against reverse-DNS and DNS/TLS-learned names (<span class="mono">*.anthropic.com</span>, <span class="mono">discord.com</span>). Adding one resolves the open alerts it covers. Per-rule exemptions above still work for narrower cases.</p>
+  <form class="row" onsubmit={addExclusion} style="margin-bottom:.6rem">
+    <input placeholder="IP, CIDR or *.hostname" bind:value={exclPattern} size="28" required />
+    <input placeholder="note (optional)" bind:value={exclNote} size="30" />
+    <button type="submit" class="primary">Add</button>
+    {#if exclMsg}<span class="small muted">{exclMsg}</span>{/if}
+  </form>
+  {#if exclusions.items.length}
+    <div class="overflow"><table>
+      <thead><tr><th>Pattern</th><th>Kind</th><th>Note</th><th class="num">Added</th><th></th></tr></thead>
+      <tbody>
+        {#each exclusions.items as e (e.id)}
+          <tr><td class="mono">{e.pattern}</td><td class="small">{e.kind}</td><td class="small">{e.note || '–'}</td>
+            <td class="num small muted">{fmtTime(e.created_at)}</td>
+            <td class="num"><button class="small" onclick={() => removeExclusion(e.id)} title="Alerts on matching addresses again">Include in alerts</button></td></tr>
+        {/each}
+      </tbody>
+    </table></div>
+  {:else}<div class="small muted">Nothing excluded. Use “Exclude from alerts” on a host page or in an alert’s details, or add a pattern above.</div>{/if}
 </div>
 
 <style>

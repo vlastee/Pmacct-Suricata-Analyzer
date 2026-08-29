@@ -51,6 +51,9 @@ type Alert struct {
 	NotifiedAt *time.Time      `json:"notified_at"`
 	DedupeKey  string          `json:"-"`
 	Inserted   bool            `json:"-"` // set by UpsertAlert: true when newly created
+	// Computed by the API for list views: the trusted-list pattern covering host / peer, if any.
+	HostExcluded string `json:"host_excluded,omitempty"`
+	PeerExcluded string `json:"peer_excluded,omitempty"`
 }
 
 // Finding is what a rule produces; the engine turns it into an Alert.

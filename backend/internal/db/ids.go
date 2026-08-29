@@ -58,6 +58,15 @@ WHERE e.id = $1`, id)
 	return &e, nil
 }
 
+// LastIDSActivity returns when the most recent Suricata-derived row was stored (alert event or
+// DNS/TLS/HTTP name), or nil when there is none. Survives analyzer restarts, unlike the
+// listener's in-memory counters.
+func (d *DB) LastIDSActivity(ctx context.Context) (*time.Time, error) {
+	var t *time.Time
+	err := d.Pool.QueryRow(ctx, `SELECT GREATEST((SELECT MAX(ts) FROM ids_events), (SELECT MAX(last_seen) FROM ip_names WHERE source IN ('dns','tls','http')))`).Scan(&t)
+	return t, err
+}
+
 // IDSOptions filters ListIDSEvents.
 type IDSOptions struct {
 	Since  time.Time

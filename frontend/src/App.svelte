@@ -17,6 +17,7 @@
   import Login from './pages/Login.svelte'
   import ChangePassword from './pages/ChangePassword.svelte'
   import { auth } from './lib/auth.svelte'
+  import { exclusions } from './lib/exclusions.svelte'
 
   let reloadKey = $state(0)
   let meta = $state<Meta | null>(null)
@@ -28,6 +29,7 @@
   $effect(() => {
     if (!auth.authed) return
     api.meta().then(m => (meta = m)).catch(() => {})
+    exclusions.refresh()
   })
   async function loadAlerts() { if (!auth.authed) return; try { alerts = await api.alertSummary() } catch {} }
   $effect(() => { void reloadKey; loadAlerts() })
