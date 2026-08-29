@@ -28,11 +28,20 @@ export interface Alert {
   resolved_at: string | null; notified_at: string | null
 }
 export interface AlertSummary { open: number; acked: number; critical: number; warning: number; info: number; by_rule: Record<string, number>; last_24h: number }
+export interface RuleParam { name: string; description: string; default: any }
 export interface RuleInfo {
   name: string; title: string; description: string; enabled: boolean; severity: string; interval: string; window: string
-  params: { name: string; description: string; default: any }[]; values: Record<string, any>; exempt_hosts: string[]
+  default_severity: string; default_interval: string; default_window: string
+  params: RuleParam[]; values: Record<string, any>; exempt_hosts: string[]
+  custom: boolean; kind?: 'sql' | 'builtin'; base?: string; sql?: string
   last_run: string | null; last_findings: number; last_error?: string; last_ms: number
 }
+// A user-defined rule: either your own SQL, or a built-in detector with your own settings.
+export interface CustomRuleSpec {
+  name: string; title: string; description: string; kind: 'sql' | 'builtin'; base?: string; sql?: string
+  params?: Record<string, any>; severity: string; interval: string; window: string; enabled?: boolean; exempt_hosts?: string[]
+}
+export interface Finding { rule: string; severity: string; host?: string; peer?: string; port?: number; title: string; details: any; key?: string }
 export interface IDSEvent {
   id: number; ts: string; src_ip: string | null; src_port: number | null; dst_ip: string | null; dst_port: number | null
   proto: string | null; sid: number | null; signature: string | null; category: string | null; severity: number | null
@@ -136,9 +145,17 @@ export const api = {
   alertAction: (id: number, action: 'ack' | 'resolve' | 'reopen') => request<Alert>(`/api/v1/alerts/${id}/${action}`, { method: 'POST' }),
   resolveAlerts: (o: { rule?: string; host?: string }) => request<{ resolved: number }>(`/api/v1/alerts/resolve${qs(o)}`, { method: 'POST' }),
   rules: () => request<{ enabled: boolean; interval?: string; items: RuleInfo[] }>('/api/v1/rules'),
-  updateRule: (name: string, body: { enabled?: boolean; severity?: string; params?: Record<string, any>; exempt_hosts?: string[] }) =>
+  updateRule: (name: string, body: { enabled?: boolean; severity?: string; params?: Record<string, any>; exempt_hosts?: string[]; interval?: string; window?: string }) =>
     request<RuleInfo>(`/api/v1/rules/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   runRule: (name: string) => request<{ raised: Alert[] }>(`/api/v1/rules/${encodeURIComponent(name)}/run`, { method: 'POST' }),
+  previewRule: (name: string) => request<{ findings: Finding[] }>(`/api/v1/rules/${encodeURIComponent(name)}/run?dry=1`, { method: 'POST' }),
+  createCustomRule: (spec: CustomRuleSpec) =>
+    request<RuleInfo>('/api/v1/rules/custom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec) }),
+  updateCustomRule: (name: string, spec: CustomRuleSpec) =>
+    request<RuleInfo>(`/api/v1/rules/custom/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec) }),
+  deleteCustomRule: (name: string) => request<{ deleted: string }>(`/api/v1/rules/custom/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  previewCustomRule: (spec: CustomRuleSpec) =>
+    request<{ findings: Finding[] }>('/api/v1/rules/custom/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec) }),
   idsEvents: (r: Range, o: { ip?: string; sid?: number; limit?: number } = {}) => request<{ items: IDSEvent[] }>(`/api/v1/ids/events${qs({ ...r, ...o })}`),
   idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener }>(`/api/v1/ids/summary${qs(r)}`),
   idsEvent: (id: number) => request<IDSEvent>(`/api/v1/ids/events/${id}`),

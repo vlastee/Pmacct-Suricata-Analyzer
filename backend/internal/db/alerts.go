@@ -55,14 +55,14 @@ type Alert struct {
 
 // Finding is what a rule produces; the engine turns it into an Alert.
 type Finding struct {
-	Rule     string
-	Severity string
-	Host     string // may be ""
-	Peer     string // may be ""
-	Port     int
-	Title    string
-	Details  map[string]any
-	Key      string // extra dedupe discriminator (e.g. signature id)
+	Rule     string         `json:"rule"`
+	Severity string         `json:"severity"`
+	Host     string         `json:"host,omitempty"` // may be ""
+	Peer     string         `json:"peer,omitempty"` // may be ""
+	Port     int            `json:"port,omitempty"`
+	Title    string         `json:"title"`
+	Details  map[string]any `json:"details"`
+	Key      string         `json:"key,omitempty"` // extra dedupe discriminator (e.g. signature id)
 }
 
 // DedupeKey builds the identity of a finding.
@@ -226,6 +226,26 @@ func (d *DB) SetAlertState(ctx context.Context, id int64, state string) (bool, e
 	return tag.RowsAffected() > 0, nil
 }
 
+// ReopenAlert moves a resolved alert back to open. Refused (ok=false, conflict=id) when another
+// live alert already carries the same dedupe key — the open one is the current case.
+func (d *DB) ReopenAlert(ctx context.Context, id int64) (ok bool, conflict int64, err error) {
+	tag, err := d.Pool.Exec(ctx, `UPDATE alerts a SET state='open', acked_at=NULL, resolved_at=NULL, reopened_at=now()
+WHERE a.id=$1 AND a.state='resolved'
+  AND NOT EXISTS (SELECT 1 FROM alerts b WHERE b.dedupe_key=a.dedupe_key AND b.id<>a.id AND b.state<>'resolved')`, id)
+	if err != nil {
+		return false, 0, err
+	}
+	if tag.RowsAffected() > 0 {
+		return true, 0, nil
+	}
+	err = d.Pool.QueryRow(ctx, `SELECT b.id FROM alerts a JOIN alerts b ON b.dedupe_key=a.dedupe_key AND b.id<>a.id AND b.state<>'resolved'
+WHERE a.id=$1 ORDER BY b.id DESC LIMIT 1`, id).Scan(&conflict)
+	if err == pgx.ErrNoRows {
+		return false, 0, nil
+	}
+	return false, conflict, err
+}
+
 // ResolveAlerts resolves all active alerts matching a rule/host filter (bulk actions from the UI).
 func (d *DB) ResolveAlerts(ctx context.Context, rule, host string) (int64, error) {
 	args := []any{}
@@ -247,7 +267,8 @@ func (d *DB) ResolveAlerts(ctx context.Context, rule, host string) (int64, error
 
 // AutoResolveStale resolves open alerts not seen for the given duration.
 func (d *DB) AutoResolveStale(ctx context.Context, after time.Duration) (int64, error) {
-	tag, err := d.Pool.Exec(ctx, `UPDATE alerts SET state='resolved', resolved_at=now() WHERE state <> 'resolved' AND last_seen < now() - $1::interval`, after.String())
+	tag, err := d.Pool.Exec(ctx, `UPDATE alerts SET state='resolved', resolved_at=now()
+WHERE state <> 'resolved' AND GREATEST(last_seen, COALESCE(reopened_at, last_seen)) < now() - $1::interval`, after.String())
 	if err != nil {
 		return 0, err
 	}

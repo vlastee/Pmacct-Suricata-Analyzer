@@ -72,7 +72,7 @@
             {#if a.state === 'open'}<button class="small" onclick={() => act(a, 'ack')}>Ack</button>{/if}
             {#if a.state === 'acked'}<button class="small" onclick={() => act(a, 'reopen')}>Reopen</button>{/if}
             {#if a.state !== 'resolved'}<button class="small" onclick={() => act(a, 'resolve')}>Resolve</button>
-            {:else}<span class="badge good">resolved</span>{/if}
+            {:else}<span class="badge good">resolved</span> <button class="small" onclick={() => act(a, 'reopen')} title="Move back to open">Reopen</button>{/if}
           </td>
         </tr>
         {#if expanded === a.id}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -73,6 +74,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/rules", s.listRules)
 	mux.HandleFunc("PUT /api/v1/rules/{name}", s.updateRule)
 	mux.HandleFunc("POST /api/v1/rules/{name}/run", s.runRule)
+	mux.HandleFunc("POST /api/v1/rules/custom", s.adminOnly(s.createCustomRule))
+	mux.HandleFunc("POST /api/v1/rules/custom/preview", s.adminOnly(s.previewCustomRule))
+	mux.HandleFunc("PUT /api/v1/rules/custom/{name}", s.adminOnly(s.updateCustomRule))
+	mux.HandleFunc("DELETE /api/v1/rules/custom/{name}", s.adminOnly(s.deleteCustomRule))
 	mux.HandleFunc("GET /api/v1/ids/events", s.idsEvents)
 	mux.HandleFunc("GET /api/v1/ids/events/{id}", s.idsEvent)
 	mux.HandleFunc("GET /api/v1/ids/summary", s.idsSummary)
@@ -855,6 +860,18 @@ func (s *Server) alertAction(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	if !ok && state == "open" {
+		var conflict int64
+		ok, conflict, err = s.DB.ReopenAlert(r.Context(), id)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		if conflict > 0 {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("cannot reopen: alert #%d is already open for the same finding", conflict))
+			return
+		}
+	}
 	if !ok {
 		writeErr(w, http.StatusNotFound, "alert not found or transition not allowed")
 		return
@@ -904,11 +921,7 @@ func (s *Server) updateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Rules.UpdateConfig(r.Context(), r.PathValue("name"), rc); err != nil {
-		if strings.HasPrefix(err.Error(), "unknown") || strings.HasPrefix(err.Error(), "invalid") {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		s.fail(w, err)
+		s.ruleErr(w, err)
 		return
 	}
 	for _, info := range s.Rules.Infos() {
@@ -925,13 +938,18 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "rules engine disabled")
 		return
 	}
-	raised, err := s.Rules.RunRule(r.Context(), r.PathValue("name"), true)
-	if err != nil {
-		if strings.HasPrefix(err.Error(), "unknown rule") {
-			writeErr(w, http.StatusNotFound, err.Error())
+	if r.URL.Query().Get("dry") == "1" {
+		findings, err := s.Rules.Preview(r.Context(), r.PathValue("name"))
+		if err != nil {
+			s.ruleErr(w, err)
 			return
 		}
-		s.fail(w, err)
+		writeJSON(w, http.StatusOK, map[string]any{"findings": findings})
+		return
+	}
+	raised, err := s.Rules.RunRule(r.Context(), r.PathValue("name"), true)
+	if err != nil {
+		s.ruleErr(w, err)
 		return
 	}
 	if raised == nil {
@@ -941,6 +959,85 @@ func (s *Server) runRule(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- IDS ----
+
+// ruleErr maps rules-engine errors to HTTP statuses.
+func (s *Server) ruleErr(w http.ResponseWriter, err error) {
+	var ve *rules.ValidationError
+	switch {
+	case errors.Is(err, rules.ErrUnknownRule):
+		writeErr(w, http.StatusNotFound, err.Error())
+	case errors.As(err, &ve):
+		writeErr(w, http.StatusBadRequest, err.Error())
+	default:
+		s.fail(w, err)
+	}
+}
+
+func (s *Server) decodeCustomSpec(w http.ResponseWriter, r *http.Request) (rules.CustomSpec, bool) {
+	var spec rules.CustomSpec
+	if s.Rules == nil {
+		writeErr(w, http.StatusServiceUnavailable, "rules engine disabled")
+		return spec, false
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&spec); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return spec, false
+	}
+	return spec, true
+}
+
+func (s *Server) createCustomRule(w http.ResponseWriter, r *http.Request) {
+	spec, ok := s.decodeCustomSpec(w, r)
+	if !ok {
+		return
+	}
+	info, err := s.Rules.SaveCustom(r.Context(), spec, true)
+	if err != nil {
+		s.ruleErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, info)
+}
+
+func (s *Server) updateCustomRule(w http.ResponseWriter, r *http.Request) {
+	spec, ok := s.decodeCustomSpec(w, r)
+	if !ok {
+		return
+	}
+	spec.Name = r.PathValue("name")
+	info, err := s.Rules.SaveCustom(r.Context(), spec, false)
+	if err != nil {
+		s.ruleErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) deleteCustomRule(w http.ResponseWriter, r *http.Request) {
+	if s.Rules == nil {
+		writeErr(w, http.StatusServiceUnavailable, "rules engine disabled")
+		return
+	}
+	if err := s.Rules.DeleteCustom(r.Context(), r.PathValue("name")); err != nil {
+		s.ruleErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": r.PathValue("name")})
+}
+
+// previewCustomRule dry-runs an unsaved definition (the editor's Preview button).
+func (s *Server) previewCustomRule(w http.ResponseWriter, r *http.Request) {
+	spec, ok := s.decodeCustomSpec(w, r)
+	if !ok {
+		return
+	}
+	findings, err := s.Rules.PreviewSpec(r.Context(), spec)
+	if err != nil {
+		s.ruleErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"findings": findings})
+}
 
 func (s *Server) idsEvents(w http.ResponseWriter, r *http.Request) {
 	win, err := s.window(r)

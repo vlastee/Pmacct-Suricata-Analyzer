@@ -139,6 +139,212 @@ func (e *env) post(t *testing.T, path string, out any) int {
 	return resp.StatusCode
 }
 
+// send issues a JSON request with a body (PUT/POST/DELETE) and decodes a 2xx response into out.
+func (e *env) send(t *testing.T, method, path string, body any, out any) int {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, e.srv.URL+path, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		t.Logf("%s %s -> %d: %s", method, path, resp.StatusCode, raw)
+	}
+	if out != nil && resp.StatusCode < 300 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			t.Fatalf("%s %s: decode %v: %s", method, path, err, raw)
+		}
+	}
+	return resp.StatusCode
+}
+
+func TestCustomRules(t *testing.T) {
+	e := setup(t)
+	type findings struct {
+		Findings []db.Finding `json:"findings"`
+	}
+	// The suite runs twice against one database (unit pass + integration pass): start clean.
+	cleanup := func() {
+		e.send(t, "DELETE", "/api/v1/rules/custom/talkers", nil, nil)
+		e.send(t, "DELETE", "/api/v1/rules/custom/ports_strict", nil, nil)
+		_, _ = e.db.Pool.Exec(context.Background(), `DELETE FROM alerts WHERE rule IN ('talkers', 'ports_strict')`)
+		_, _ = e.db.Pool.Exec(context.Background(), `DELETE FROM settings WHERE key = 'rules'`)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+	// The fixture has two local hosts with traffic. The query ignores $1/$2 on purpose: unused
+	// parameters must still bind (the wrapper references them).
+	sqlRule := map[string]any{"name": "talkers", "title": "Local hosts with traffic", "kind": "sql", "severity": "info", "interval": "1m", "window": "24h",
+		"sql": "SELECT ip_src AS host, jsonb_build_object('bytes', SUM(bytes)) AS details FROM acct WHERE ip_src <<= ANY($3::cidr[]) GROUP BY ip_src HAVING SUM(bytes) > 0"}
+
+	// Preview an unsaved definition.
+	var pv findings
+	if code := e.send(t, "POST", "/api/v1/rules/custom/preview", sqlRule, &pv); code != 200 {
+		t.Fatalf("preview: http %d", code)
+	}
+	if len(pv.Findings) != 2 {
+		t.Fatalf("preview findings: %+v", pv.Findings)
+	}
+	hosts := map[string]db.Finding{}
+	for _, f := range pv.Findings {
+		hosts[f.Host] = f
+	}
+	f, ok := hosts["192.168.1.10"]
+	if !ok || f.Rule != "talkers" || f.Severity != "info" || f.Title != "Local hosts with traffic: 192.168.1.10" || f.Details["bytes"] == nil {
+		t.Fatalf("finding for 192.168.1.10: %+v", f)
+	}
+
+	// Create, list, run.
+	var info rules.RuleInfo
+	if code := e.send(t, "POST", "/api/v1/rules/custom", sqlRule, &info); code != 201 {
+		t.Fatalf("create: http %d", code)
+	}
+	if !info.Custom || info.Kind != "sql" || info.Interval != "1m0s" || info.Window != "24h0m0s" || info.Severity != "info" || !info.Enabled {
+		t.Fatalf("created info: %+v", info)
+	}
+	if code := e.send(t, "POST", "/api/v1/rules/custom", sqlRule, nil); code != 400 {
+		t.Errorf("duplicate create: http %d, want 400", code)
+	}
+	var list struct {
+		Items []rules.RuleInfo `json:"items"`
+	}
+	e.get(t, "/api/v1/rules", &list)
+	found := false
+	for _, it := range list.Items {
+		if it.Name == "talkers" && it.Custom {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("custom rule missing from list: %+v", list.Items)
+	}
+	var run struct {
+		Raised []db.Alert `json:"raised"`
+	}
+	if code := e.post(t, "/api/v1/rules/talkers/run", &run); code != 200 || len(run.Raised) != 2 {
+		t.Fatalf("run: http %d raised=%+v", code, run.Raised)
+	}
+	var al struct {
+		Items []db.Alert `json:"items"`
+	}
+	e.get(t, "/api/v1/alerts?rule=talkers", &al)
+	if len(al.Items) != 2 || al.Items[0].Severity != "info" {
+		t.Fatalf("alerts from custom rule: %+v", al.Items)
+	}
+
+	// Partial config update (same endpoint as built-ins) changes timing/severity in place.
+	if code := e.send(t, "PUT", "/api/v1/rules/talkers", map[string]any{"interval": "2m", "severity": "warning"}, &info); code != 200 {
+		t.Fatalf("update config: http %d", code)
+	}
+	if info.Interval != "2m0s" || info.Severity != "warning" || info.SQL == "" {
+		t.Fatalf("after config update: %+v", info)
+	}
+	// Full definition update with bad SQL is rejected and leaves the rule untouched.
+	bad := map[string]any{}
+	for k, v := range sqlRule {
+		bad[k] = v
+	}
+	bad["sql"] = "DROP TABLE acct"
+	if code := e.send(t, "PUT", "/api/v1/rules/custom/talkers", bad, nil); code != 400 {
+		t.Errorf("bad sql update: http %d, want 400", code)
+	}
+	if code := e.post(t, "/api/v1/rules/talkers/run?dry=1", &pv); code != 200 || len(pv.Findings) != 2 {
+		t.Fatalf("dry run after rejected update: http %d %+v", code, pv.Findings)
+	}
+	// Runtime SQL errors surface as 400 on preview (user's query), not 500.
+	if code := e.send(t, "POST", "/api/v1/rules/custom/preview", map[string]any{"kind": "sql", "sql": "SELECT nope AS host FROM acct"}, nil); code != 400 {
+		t.Errorf("preview with bad column: http %d, want 400", code)
+	}
+
+	// A rule built on a built-in detector with its own parameters.
+	clone := map[string]any{"name": "ports_strict", "title": "Any 443 out", "kind": "builtin", "base": "suspicious_port", "severity": "critical",
+		"params": map[string]any{"ports": []int{443}, "critical_ports": []int{}}, "interval": "5m", "window": "1h"}
+	if code := e.send(t, "POST", "/api/v1/rules/custom", clone, &info); code != 201 {
+		t.Fatalf("create builtin-kind: http %d", code)
+	}
+	if info.Base != "suspicious_port" || len(info.Params) != 2 || info.Interval != "5m0s" {
+		t.Fatalf("builtin-kind info: %+v", info)
+	}
+	if code := e.post(t, "/api/v1/rules/ports_strict/run?dry=1", &pv); code != 200 {
+		t.Fatalf("dry run builtin-kind: http %d", code)
+	}
+	clone["params"] = map[string]any{"nope": 1}
+	if code := e.send(t, "PUT", "/api/v1/rules/custom/ports_strict", clone, nil); code != 400 {
+		t.Errorf("unknown param: http %d, want 400", code)
+	}
+
+	// Built-in rules accept interval/window overrides through the config endpoint.
+	if code := e.send(t, "PUT", "/api/v1/rules/port_scan", map[string]any{"interval": "3m", "window": "15m"}, &info); code != 200 {
+		t.Fatalf("builtin timing: http %d", code)
+	}
+	if info.Interval != "3m0s" || info.Window != "15m0s" || info.DefaultInterval != "1m0s" {
+		t.Fatalf("builtin timing info: %+v", info)
+	}
+	if code := e.send(t, "PUT", "/api/v1/rules/port_scan", map[string]any{"interval": "5s"}, nil); code != 400 {
+		t.Errorf("too-short interval: http %d, want 400", code)
+	}
+	// Toggling keeps the other overrides (merge semantics).
+	if code := e.send(t, "PUT", "/api/v1/rules/port_scan", map[string]any{"enabled": false}, &info); code != 200 || info.Enabled || info.Interval != "3m0s" {
+		t.Fatalf("toggle lost overrides: http %d %+v", code, info)
+	}
+
+	// Delete.
+	if code := e.send(t, "DELETE", "/api/v1/rules/custom/talkers", nil, nil); code != 200 {
+		t.Fatalf("delete: http %d", code)
+	}
+	if code := e.send(t, "DELETE", "/api/v1/rules/custom/talkers", nil, nil); code != 404 {
+		t.Errorf("delete again: http %d, want 404", code)
+	}
+	if code := e.send(t, "DELETE", "/api/v1/rules/custom/port_scan", nil, nil); code != 404 {
+		t.Errorf("deleting a built-in: http %d, want 404", code)
+	}
+	e.get(t, "/api/v1/alerts?rule=talkers", &al)
+	if len(al.Items) != 2 {
+		t.Errorf("alerts should survive rule deletion: %d", len(al.Items))
+	}
+}
+
+func TestReopenAlert(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule = 'reopen_test'`)
+	f := db.Finding{Rule: "reopen_test", Severity: "warning", Host: "10.0.0.9", Title: "t", Details: map[string]any{}}
+	a, err := e.db.UpsertAlert(ctx, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got db.Alert
+	if code := e.post(t, fmt.Sprintf("/api/v1/alerts/%d/reopen", a.ID), nil); code != 404 {
+		t.Errorf("reopen an open alert: http %d, want 404", code)
+	}
+	if code := e.post(t, fmt.Sprintf("/api/v1/alerts/%d/resolve", a.ID), &got); code != 200 || got.State != "resolved" {
+		t.Fatalf("resolve: http %d %+v", code, got)
+	}
+	if code := e.post(t, fmt.Sprintf("/api/v1/alerts/%d/reopen", a.ID), &got); code != 200 || got.State != "open" || got.ResolvedAt != nil {
+		t.Fatalf("reopen resolved: http %d %+v", code, got)
+	}
+	// Resolve again; a fresh occurrence opens a new row, so the old one can no longer be reopened.
+	e.post(t, fmt.Sprintf("/api/v1/alerts/%d/resolve", a.ID), nil)
+	b, err := e.db.UpsertAlert(ctx, f)
+	if err != nil || !b.Inserted || b.ID == a.ID {
+		t.Fatalf("second occurrence should be a new alert: %+v %v", b, err)
+	}
+	if code := e.post(t, fmt.Sprintf("/api/v1/alerts/%d/reopen", a.ID), nil); code != 409 {
+		t.Errorf("reopen with live duplicate: http %d, want 409", code)
+	}
+}
+
 func TestHealthAndMeta(t *testing.T) {
 	e := setup(t)
 	var h map[string]any

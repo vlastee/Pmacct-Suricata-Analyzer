@@ -204,6 +204,44 @@ Built-in rules:
 | `iot_fanout` | A device tagged **iot** talks to an unusually large number of ASNs |
 | `ids` | Wraps Suricata alerts (see below) into the same alert stream |
 
+Every rule can be tuned on the **Rules** page: enable/disable, severity, thresholds, **how often it
+runs and how far back it looks** (interval/window overrides, 30 s–7 d / 1 m–30 d), and exempt hosts.
+
+### Custom rules
+
+**New rule** on the Rules page creates a rule of one of two kinds (admin only; both get a
+**Preview** that shows what would be raised right now without creating alerts):
+
+* **Built-in detector** — reuse any built-in's logic with your own parameters, severity, timing
+  and exemptions. "Duplicate" on a built-in card pre-fills this, e.g. a second `suspicious_port`
+  that treats port 443 from IoT devices as critical.
+* **SQL query** — your own `SELECT` over the analyzer's tables. It runs read-only with a 30 s
+  timeout, once per interval, with `$1` = window start, `$2` = window end (`timestamptz`) and
+  `$3` = local networks (`cidr[]`). Return a `host` column (the local device; `inet` or text) and
+  optionally `peer`, `port`, `title`, `severity` (`info|warning|critical`), `details` (`jsonb`)
+  and `key` (extra dedupe discriminator). Findings dedupe like built-ins (rule + host + peer +
+  port + key), so aggregate — at most 500 rows per run. Tables: `acct`, `ip_info`, `ip_names`,
+  `ip_nicknames`, `ids_events`, `threat_lists`, `host_hourly`, `host_peer_daily`, `alerts`.
+
+```sql
+-- Upload of more than 1 GB to a single external peer within the window
+SELECT ip_src AS host, ip_dst AS peer, SUM(bytes) AS bytes,
+       format('%s sent %s MB to %s', ip_src, (SUM(bytes)/1048576)::int, ip_dst) AS title,
+       jsonb_build_object('bytes', SUM(bytes)) AS details
+FROM acct
+WHERE stamp_inserted >= $1 AND stamp_inserted < $2
+  AND ip_src <<= ANY($3::cidr[]) AND NOT (ip_dst <<= ANY($3::cidr[]))
+GROUP BY ip_src, ip_dst
+HAVING SUM(bytes) > 1073741824
+```
+
+API: `POST/PUT/DELETE /api/v1/rules/custom[/{name}]`, `POST /api/v1/rules/custom/preview`,
+`POST /api/v1/rules/{name}/run?dry=1`. Deleting a rule keeps the alerts it raised.
+
+**Alert lifecycle**: open → acked → resolved, and **resolved → open** again via *Reopen* (refused
+with 409 while a newer alert for the same finding is open). Alerts not seen for 7 days
+auto-resolve (a reopened alert gets a fresh 7 days).
+
 **Threat feeds** (`THREAT_FEEDS`, refreshed every `THREAT_FEEDS_INTERVAL`) are bulk IP/CIDR lists
 matched entirely locally — no per-IP quota. The default set is abuse.ch Feodo & SSLBL, Spamhaus
 DROP, the Tor exit list, CINS, ET compromised, and blocklist.de. Because pmacct captures on the
