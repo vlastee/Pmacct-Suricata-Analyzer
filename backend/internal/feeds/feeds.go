@@ -3,6 +3,7 @@ package feeds
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -53,16 +54,24 @@ func Parse(r io.Reader) ([]string, error) {
 		if line == "" {
 			continue
 		}
-		// Scan every whitespace/comma-separated column for the first IP or CIDR, so lists that
-		// put the address in a later column (e.g. abuse.ch SSLBL "Firstseen,DstIP,DstPort") work.
+		// Scan every whitespace/comma-separated column for the first IP, CIDR or ip:port, so lists
+		// that put the address in a later column or quote it (abuse.ch ThreatFox CSV:
+		// "first_seen","id","1.2.3.4:443","ip:port",…) work.
 		var p netip.Prefix
 		found := false
 		for _, t := range strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' || r == ',' }) {
+			t = strings.Trim(t, `"'`)
 			if pf, err := netip.ParsePrefix(t); err == nil {
 				p, found = pf.Masked(), true
 				break
 			}
-			if a, err := netip.ParseAddr(t); err == nil {
+			a, err := netip.ParseAddr(t)
+			if err != nil {
+				if ap, err2 := netip.ParseAddrPort(t); err2 == nil {
+					a, err = ap.Addr(), nil
+				}
+			}
+			if err == nil {
 				a = a.Unmap()
 				p, found = netip.PrefixFrom(a, a.BitLen()), true
 				break
@@ -104,17 +113,36 @@ func (f *Fetcher) Fetch(ctx context.Context, name, url string) (int, error) {
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	nets, err := Parse(io.LimitReader(resp.Body, 64<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return 0, err
+	}
+	nets, err := Parse(bytes.NewReader(body))
 	if err != nil {
 		return 0, err
 	}
 	if len(nets) == 0 {
+		// abuse.ch retires lists by serving only a header ("ATTENTION: This list has been
+		// deprecated on …"); say so instead of a generic parse failure.
+		if i := strings.Index(strings.ToLower(string(body)), "deprecated"); i >= 0 {
+			return 0, fmt.Errorf("feed is deprecated upstream — remove it from THREAT_FEEDS (server says: %s)", excerpt(body, i))
+		}
 		return 0, fmt.Errorf("feed parsed to zero entries; keeping previous list")
 	}
 	if err := f.DB.ReplaceThreatList(ctx, name, nets); err != nil {
 		return 0, err
 	}
 	return len(nets), nil
+}
+
+// excerpt returns the (trimmed) line of body containing offset i.
+func excerpt(body []byte, i int) string {
+	start := bytes.LastIndexByte(body[:i], '\n') + 1
+	end := bytes.IndexByte(body[i:], '\n')
+	if end < 0 {
+		end = len(body) - i
+	}
+	return strings.TrimSpace(strings.TrimLeft(string(body[start:i+end]), "# "))
 }
 
 // RefreshAll fetches every configured feed. Failures are logged and recorded, not fatal.
@@ -144,6 +172,15 @@ func (f *Fetcher) RefreshAll(ctx context.Context) {
 		f.results[name] = res
 		f.lastRun = time.Now()
 		f.mu.Unlock()
+	}
+	// Lists that are no longer configured (a feed dropped from THREAT_FEEDS, or a retired
+	// default such as abuse.ch SSLBL) must not keep matching traffic.
+	if len(names) > 0 && f.DB != nil {
+		if gone, err := f.DB.DeleteThreatListsExcept(ctx, names); err != nil {
+			slog.Warn("prune threat lists", "err", err)
+		} else if len(gone) > 0 {
+			slog.Info("removed threat lists no longer configured", "lists", gone)
+		}
 	}
 }
 

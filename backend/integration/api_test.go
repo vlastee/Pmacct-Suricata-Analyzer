@@ -315,6 +315,32 @@ func TestCustomRules(t *testing.T) {
 	}
 }
 
+func TestPruneThreatLists(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if err := e.db.ReplaceThreatList(ctx, "keepme", []string{"198.51.100.0/24"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.ReplaceThreatList(ctx, "retired", []string{"203.0.113.9/32", "203.0.113.10/32"}); err != nil {
+		t.Fatal(err)
+	}
+	gone, err := e.db.DeleteThreatListsExcept(ctx, []string{"keepme", "feodo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gone) != 1 || gone[0] != "retired" {
+		t.Fatalf("pruned lists: %v", gone)
+	}
+	lists, err := e.db.ThreatListsFor(ctx, "198.51.100.7")
+	if err != nil || len(lists) != 1 || lists[0] != "keepme" {
+		t.Fatalf("kept list should still match: %v %v", lists, err)
+	}
+	if lists, _ := e.db.ThreatListsFor(ctx, "203.0.113.9"); len(lists) != 0 {
+		t.Fatalf("retired list should be gone: %v", lists)
+	}
+	_, _ = e.db.DeleteThreatListsExcept(ctx, []string{"feodo"}) // leave the fixture state for other tests
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

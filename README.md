@@ -243,7 +243,7 @@ with 409 while a newer alert for the same finding is open). Alerts not seen for 
 auto-resolve (a reopened alert gets a fresh 7 days).
 
 **Threat feeds** (`THREAT_FEEDS`, refreshed every `THREAT_FEEDS_INTERVAL`) are bulk IP/CIDR lists
-matched entirely locally — no per-IP quota. The default set is abuse.ch Feodo & SSLBL, Spamhaus
+matched entirely locally — no per-IP quota. The default set is abuse.ch Feodo & ThreatFox, Spamhaus
 DROP, the Tor exit list, CINS, ET compromised, and blocklist.de. Because pmacct captures on the
 LAN *before* pfSense drops a packet, a **blocked** outbound attempt to a C2 still shows up as a
 one-way flow — so `threat_feed` + `one_way` catch malware even when the firewall stops it.

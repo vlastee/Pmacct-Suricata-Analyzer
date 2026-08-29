@@ -174,8 +174,10 @@ func ParsePrefixes(s string) ([]netip.Prefix, error) {
 }
 
 // DefaultThreatFeeds are free, bulk-downloadable IP/CIDR lists (no API keys, no per-IP quotas).
+// abuse.ch retired the SSLBL IP blacklist on 2025-01-03; ThreatFox (ip:port IOCs, botnet C2s)
+// is its successor and also covers Feodo Tracker's data when that site is down.
 const DefaultThreatFeeds = "feodo=https://feodotracker.abuse.ch/downloads/ipblocklist_recommended.txt," +
-	"sslbl=https://sslbl.abuse.ch/blacklist/sslipblacklist.txt," +
+	"threatfox=https://threatfox.abuse.ch/export/csv/ip-port/recent/," +
 	"spamhaus_drop=https://www.spamhaus.org/drop/drop.txt," +
 	"tor_exits=https://check.torproject.org/torbulkexitlist," +
 	"cins=https://cinsscore.com/list/ci-badguys.txt," +

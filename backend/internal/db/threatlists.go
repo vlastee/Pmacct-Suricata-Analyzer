@@ -27,6 +27,30 @@ func (d *DB) ReplaceThreatList(ctx context.Context, list string, nets []string) 
 	return tx.Commit(ctx)
 }
 
+// DeleteThreatListsExcept drops lists that are no longer configured (e.g. a feed removed from
+// THREAT_FEEDS), so stale entries stop matching and stop showing in the status. Returns the
+// names removed.
+func (d *DB) DeleteThreatListsExcept(ctx context.Context, keep []string) ([]string, error) {
+	rows, err := d.Pool.Query(ctx, `DELETE FROM threat_lists WHERE NOT (list = ANY($1::text[])) RETURNING list`, keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	var out []string
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			return nil, err
+		}
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	return out, rows.Err()
+}
+
 // ThreatListStats summarises loaded lists.
 type ThreatListStat struct {
 	List    string    `json:"list"`
