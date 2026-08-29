@@ -80,7 +80,8 @@
             <pre>{JSON.stringify(a.details, null, 2)}</pre>
             <div class="small muted">first seen {fmtTime(a.first_seen)} · state {a.state}{#if a.notified_at} · notified {fmtAgo(a.notified_at)}{/if}
               {#if a.host} · <a href={router.href(`/hosts/${a.host}`)}>host page →</a>{/if}
-              {#if a.peer} · <a href={router.href(`/hosts/${a.peer}`)}>peer page →</a>{/if}</div>
+              {#if a.peer} · <a href={router.href(`/hosts/${a.peer}`)}>peer page →</a>{/if}
+              {#if a.details?.ids_event_id} · <a href={router.href('/ids', { event: String(a.details.ids_event_id) })}>IDS event →</a>{/if}</div>
           </td></tr>
         {/if}
       {:else}

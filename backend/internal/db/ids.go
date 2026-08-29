@@ -28,12 +28,34 @@ type IDSEvent struct {
 	DstName   *string         `json:"dst_nickname"`
 }
 
-// InsertIDSEvent stores one alert event.
-func (d *DB) InsertIDSEvent(ctx context.Context, e *IDSEvent) error {
-	_, err := d.Pool.Exec(ctx, `INSERT INTO ids_events (ts, src_ip, src_port, dst_ip, dst_port, proto, sid, signature, category, severity, action, app_proto, raw)
-VALUES ($1, $2::inet, $3, $4::inet, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		e.TS, e.SrcIP, e.SrcPort, e.DstIP, e.DstPort, e.Proto, e.SID, e.Signature, e.Category, e.Severity, e.Action, e.AppProto, e.Raw)
-	return err
+// InsertIDSEvent stores one alert event and returns its id.
+func (d *DB) InsertIDSEvent(ctx context.Context, e *IDSEvent) (int64, error) {
+	var id int64
+	err := d.Pool.QueryRow(ctx, `INSERT INTO ids_events (ts, src_ip, src_port, dst_ip, dst_port, proto, sid, signature, category, severity, action, app_proto, raw)
+VALUES ($1, $2::inet, $3, $4::inet, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+		e.TS, e.SrcIP, e.SrcPort, e.DstIP, e.DstPort, e.Proto, e.SID, e.Signature, e.Category, e.Severity, e.Action, e.AppProto, e.Raw).Scan(&id)
+	return id, err
+}
+
+const idsEventCols = `e.id, e.ts, host(e.src_ip), e.src_port, host(e.dst_ip), e.dst_port, e.proto, e.sid, e.signature, e.category, e.severity, e.action, e.app_proto`
+
+// GetIDSEvent returns one event including its raw EVE record, or nil if it does not exist.
+func (d *DB) GetIDSEvent(ctx context.Context, id int64) (*IDSEvent, error) {
+	rows, err := d.Pool.Query(ctx, `SELECT `+idsEventCols+`, e.raw, ns.nickname, nd.nickname
+FROM ids_events e LEFT JOIN ip_nicknames ns ON ns.ip = e.src_ip LEFT JOIN ip_nicknames nd ON nd.ip = e.dst_ip
+WHERE e.id = $1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	var e IDSEvent
+	if err := rows.Scan(&e.ID, &e.TS, &e.SrcIP, &e.SrcPort, &e.DstIP, &e.DstPort, &e.Proto, &e.SID, &e.Signature, &e.Category, &e.Severity, &e.Action, &e.AppProto, &e.Raw, &e.SrcName, &e.DstName); err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // IDSOptions filters ListIDSEvents.
@@ -66,7 +88,7 @@ func (d *DB) ListIDSEvents(ctx context.Context, o IDSOptions) ([]IDSEvent, error
 		raw = "e.raw"
 	}
 	args = append(args, o.Limit, o.Offset)
-	rows, err := d.Pool.Query(ctx, `SELECT e.id, e.ts, host(e.src_ip), e.src_port, host(e.dst_ip), e.dst_port, e.proto, e.sid, e.signature, e.category, e.severity, e.action, e.app_proto, `+raw+`, ns.nickname, nd.nickname
+	rows, err := d.Pool.Query(ctx, `SELECT `+idsEventCols+`, `+raw+`, ns.nickname, nd.nickname
 FROM ids_events e LEFT JOIN ip_nicknames ns ON ns.ip = e.src_ip LEFT JOIN ip_nicknames nd ON nd.ip = e.dst_ip
 WHERE `+strings.Join(conds, " AND ")+fmt.Sprintf(` ORDER BY e.ts DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args)), args...)
 	if err != nil {

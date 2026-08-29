@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,29 +36,122 @@ type Listener struct {
 	names     atomic.Int64
 	dropped   atomic.Int64
 	malformed atomic.Int64
+	ignored   atomic.Int64
 	mu        sync.Mutex
+	started   time.Time
 	lastAt    time.Time
 	lastErr   string
+	lastErrAt time.Time
+	types     map[string]*typeStat
+}
+
+type typeStat struct {
+	count int64
+	last  time.Time
+}
+
+// maxTypes bounds the per-type table so a misbehaving sender cannot grow it without limit;
+// anything beyond is folded into "other".
+const maxTypes = 24
+
+// TypeStat is the per-event-type ingest counter shown on the IDS page.
+type TypeStat struct {
+	Type  string    `json:"type"`
+	Count int64     `json:"count"`
+	Last  time.Time `json:"last"`
+	Used  string    `json:"used,omitempty"` // "alerts" (stored + raised), "names" (teaches hostnames) or "" (ignored)
 }
 
 // Stats is a snapshot for the API.
 type Stats struct {
-	Listen    string    `json:"listen"`
-	Received  int64     `json:"received"`
-	Alerts    int64     `json:"alerts"`
-	Names     int64     `json:"names"`
-	Dropped   int64     `json:"dropped"`
-	Malformed int64     `json:"malformed"` // lines that looked like JSON but would not parse (usually syslog truncation)
-	LastEvent time.Time `json:"last_event"`
-	LastError string    `json:"last_error,omitempty"`
+	Listen      string     `json:"listen"`
+	Started     *time.Time `json:"started,omitempty"`
+	Received    int64      `json:"received"`
+	Alerts      int64      `json:"alerts"`
+	Names       int64      `json:"names"`
+	Dropped     int64      `json:"dropped"`
+	Malformed   int64      `json:"malformed"` // lines that looked like JSON but would not parse (usually syslog truncation)
+	Ignored     int64      `json:"ignored"`   // syslog lines with no JSON at all (other daemons forwarded alongside Suricata)
+	LastEvent   *time.Time `json:"last_event,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
+	Types       []TypeStat `json:"types"`
 }
 
 // Stats returns counters.
 func (l *Listener) Stats() Stats {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return Stats{Listen: l.Addr, Received: l.received.Load(), Alerts: l.alerts.Load(), Names: l.names.Load(),
-		Dropped: l.dropped.Load(), Malformed: l.malformed.Load(), LastEvent: l.lastAt, LastError: l.lastErr}
+	s := Stats{Listen: l.Addr, Received: l.received.Load(), Alerts: l.alerts.Load(), Names: l.names.Load(),
+		Dropped: l.dropped.Load(), Malformed: l.malformed.Load(), Ignored: l.ignored.Load(), LastError: l.lastErr, Types: []TypeStat{}}
+	if !l.started.IsZero() {
+		t := l.started
+		s.Started = &t
+	}
+	if !l.lastAt.IsZero() {
+		t := l.lastAt
+		s.LastEvent = &t
+	}
+	if !l.lastErrAt.IsZero() {
+		t := l.lastErrAt
+		s.LastErrorAt = &t
+	}
+	for k, v := range l.types {
+		s.Types = append(s.Types, TypeStat{Type: k, Count: v.count, Last: v.last, Used: usedFor(k)})
+	}
+	sort.Slice(s.Types, func(i, j int) bool {
+		if s.Types[i].Count != s.Types[j].Count {
+			return s.Types[i].Count > s.Types[j].Count
+		}
+		return s.Types[i].Type < s.Types[j].Type
+	})
+	return s
+}
+
+// usedFor says what the analyzer does with an event type (mirrors handle).
+func usedFor(t string) string {
+	switch t {
+	case "alert":
+		return "alerts"
+	case "dns.answer", "tls", "http":
+		return "names"
+	}
+	return ""
+}
+
+// typeKey classifies an event for the ingest table. DNS is split because only answers carry
+// names; queries are usually the bulk of what Suricata logs and are ignored.
+func typeKey(ev *Event) string {
+	if ev.EventType == "dns" {
+		if ev.DNS != nil && (ev.DNS.Type == "answer" || len(ev.DNS.Answers) > 0 || len(ev.DNS.Grouped) > 0 || ev.DNS.RData != "") {
+			return "dns.answer"
+		}
+		return "dns.query"
+	}
+	return ev.EventType
+}
+
+// note records one received event of the given type.
+func (l *Listener) note(key string, at time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lastAt = at
+	if l.types == nil {
+		l.types = map[string]*typeStat{}
+	}
+	ts := l.types[key]
+	if ts == nil {
+		if len(l.types) >= maxTypes {
+			key = "other"
+			ts = l.types[key]
+		}
+		if ts == nil {
+			ts = &typeStat{}
+			l.types[key] = ts
+		}
+	}
+	ts.count++
+	ts.last = at
 }
 
 // Run listens on UDP and TCP until ctx is done.
@@ -65,6 +159,9 @@ func (l *Listener) Run(ctx context.Context) error {
 	if l.Now == nil {
 		l.Now = time.Now
 	}
+	l.mu.Lock()
+	l.started = l.Now()
+	l.mu.Unlock()
 	pc, err := net.ListenPacket("udp", l.Addr)
 	if err != nil {
 		return fmt.Errorf("suricata udp listen: %w", err)
@@ -160,6 +257,7 @@ func (l *Listener) markMalformed(msg string) {
 	l.malformed.Add(1)
 	l.mu.Lock()
 	l.lastErr = msg
+	l.lastErrAt = l.Now()
 	l.mu.Unlock()
 }
 
@@ -172,6 +270,8 @@ func (l *Listener) HandleLine(ctx context.Context, line string) {
 		// the operator can see it (a plain syslog line with no '{' is just ignored).
 		if i := strings.Index(line, "{"); i >= 0 && strings.HasPrefix(strings.TrimSpace(line[i:]), `{"`) {
 			l.markMalformed("truncated event (no closing brace)")
+		} else {
+			l.ignored.Add(1) // e.g. filterlog/dhcpd lines when pfSense forwards "Everything"
 		}
 		return
 	}
@@ -184,13 +284,12 @@ func (l *Listener) HandleLine(ctx context.Context, line string) {
 		return
 	}
 	l.received.Add(1)
-	l.mu.Lock()
-	l.lastAt = l.Now()
-	l.mu.Unlock()
+	l.note(typeKey(&ev), l.Now())
 	if err := l.handle(ctx, &ev, js); err != nil {
 		l.dropped.Add(1)
 		l.mu.Lock()
 		l.lastErr = err.Error()
+		l.lastErrAt = l.Now()
 		l.mu.Unlock()
 		slog.Warn("suricata event", "type", ev.EventType, "err", err)
 	}
@@ -230,12 +329,15 @@ func (l *Listener) handle(ctx context.Context, ev *Event, raw string) error {
 		}
 		sid, sig, cat, sev, act := ev.Alert.SignatureID, ev.Alert.Signature, ev.Alert.Category, ev.Alert.Severity, ev.Alert.Action
 		e.SID, e.Signature, e.Category, e.Severity, e.Action = &sid, &sig, &cat, &sev, &act
-		if err := l.DB.InsertIDSEvent(ctx, e); err != nil {
+		id, err := l.DB.InsertIDSEvent(ctx, e)
+		if err != nil {
 			return err
 		}
 		l.alerts.Add(1)
 		if l.Sink != nil {
-			return l.Sink.RaiseIDS(ctx, l.finding(ev))
+			f := l.finding(ev)
+			f.Details["ids_event_id"] = id // lets the alert link back to the exact stored event
+			return l.Sink.RaiseIDS(ctx, f)
 		}
 		return nil
 	case "dns":

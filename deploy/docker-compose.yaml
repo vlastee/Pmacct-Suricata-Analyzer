@@ -5,6 +5,10 @@
 #     cp analyzer.env.example analyzer.env      # then put your VT_API_KEY etc. in it
 #     docker compose up -d --build
 #
+# To UPDATE after a git pull / rsync (DB and nfacctd keep running, migrations are automatic):
+#
+#     docker compose up -d --build analyzer
+#
 # The analyzer image is built from this repository (build context is the parent dir, "..").
 # All services use network_mode: host, so on the collector (10.0.0.210):
 #   * PostgreSQL  -> 127.0.0.1:55432

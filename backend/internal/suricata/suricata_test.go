@@ -48,3 +48,42 @@ func TestFindingDirection(t *testing.T) {
 		t.Errorf("finding: %+v", f)
 	}
 }
+
+func TestIngestCounters(t *testing.T) {
+	l := &Listener{Now: time.Now}
+	ctx := context.Background()
+	l.HandleLine(ctx, `<134>Aug 27 12:00:00 pfsense suricata[1]: {"event_type":"dns","dns":{"type":"query","rrname":"a.example"}}`)
+	l.HandleLine(ctx, `{"event_type":"dns","dns":{"type":"query","rrname":"b.example"}}`)
+	l.HandleLine(ctx, `{"event_type":"flow","src_ip":"10.0.0.1"}`)
+	l.HandleLine(ctx, `<13>Aug 27 12:00:00 pfsense filterlog[1]: 5,,,1000000103,igb1,match,block,in,4`)
+	s := l.Stats()
+	if s.Received != 3 || s.Ignored != 1 || s.LastEvent == nil || s.Started != nil || s.LastErrorAt != nil {
+		t.Fatalf("stats: %+v", s)
+	}
+	// Sorted by count desc; DNS queries are classified separately from answers and marked unused.
+	if len(s.Types) != 2 || s.Types[0].Type != "dns.query" || s.Types[0].Count != 2 || s.Types[0].Used != "" || s.Types[1].Type != "flow" || s.Types[1].Count != 1 {
+		t.Fatalf("types: %+v", s.Types)
+	}
+	if usedFor("alert") != "alerts" || usedFor("dns.answer") != "names" || usedFor("tls") != "names" || usedFor("stats") != "" {
+		t.Error("usedFor mapping")
+	}
+	if typeKey(&Event{EventType: "dns", DNS: &struct {
+		Type    string `json:"type"`
+		RRName  string `json:"rrname"`
+		RRType  string `json:"rrtype"`
+		RData   string `json:"rdata"`
+		Answers []struct {
+			RRName string `json:"rrname"`
+			RRType string `json:"rrtype"`
+			RData  string `json:"rdata"`
+		} `json:"answers"`
+		Grouped map[string][]string `json:"grouped"`
+	}{Type: "answer"}}) != "dns.answer" {
+		t.Error("answer should classify as dns.answer")
+	}
+	// Truncated JSON is malformed (with a timestamp), not ignored.
+	l.HandleLine(ctx, `<134>Aug 27 12:00:00 pfsense suricata[1]: {"event_type":"alert","src_ip":"1.2.3.`)
+	if s := l.Stats(); s.Malformed != 1 || s.LastErrorAt == nil || s.LastError == "" {
+		t.Fatalf("malformed stats: %+v", s)
+	}
+}

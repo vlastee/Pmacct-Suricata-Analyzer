@@ -117,6 +117,7 @@ check "migrations created alerts table"      bash -c "podman exec $PG psql -U pm
 check "auth/me reports disabled"             bash -c "json /api/v1/auth/me | grep -q '\"auth\":false'"
 check "migrations created users table"       bash -c "podman exec $PG psql -U pmacct -d pmacct -Atc \"select count(*) from information_schema.tables where table_name='users'\" | grep -qx 1"
 check "healthz reachable inside container"   bash -c "podman exec $APP curl -sf http://127.0.0.1:8080/healthz | grep -q '\"status\":\"ok\"'"
+check "image HEALTHCHECK passes"             podman healthcheck run "$APP"
 
 if [ "$fail" != 0 ]; then
   echo "--- app logs ---" >&2; podman logs "$APP" >&2

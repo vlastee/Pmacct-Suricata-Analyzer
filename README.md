@@ -80,6 +80,30 @@ Notes for either setup:
   the **LAN** interface(s), not WAN — WAN flows are post-NAT and only ever show the router's
   public address. Select LAN only (not LAN + WAN, which double-counts every connection).
 
+### Updating a running deployment
+
+Pull the new code and rebuild **only the analyzer** — the database, `nfacctd` and retention keep
+running, so collection never stops and no data is touched:
+
+```sh
+cd Pmacct-Suricata-Analyzer
+git pull                                   # or rsync the checkout from your workstation
+cd deploy
+docker compose up -d --build analyzer
+docker compose logs -f analyzer            # Ctrl-C to stop following
+```
+
+* `--build` rebuilds the image from the new source (multi-stage, so the host needs no Go/Node);
+  `up -d` then recreates just the container whose image changed.
+* Schema migrations run automatically at startup — there is never a separate DB-upgrade step.
+* `postgres_data/`, `analyzer.env` and `.env` are git-ignored, so neither `git pull` nor
+  `rsync --delete` (with `--filter=':- .gitignore'`) can overwrite data or secrets.
+* If `deploy/docker-compose.yaml` itself changed (new service, new env var), drop the `analyzer`
+  argument so every service is reconciled: `docker compose up -d --build`.
+* Changed `analyzer.env`? `docker compose up -d analyzer` (no `--build`) recreates the container
+  with the new values — a plain `restart` does **not** re-read the env file.
+* Optional: `docker image prune -f` removes the superseded image layers.
+
 ## Configuration (environment)
 
 | Variable | Default | Meaning |
@@ -227,6 +251,12 @@ Set `SURICATA_LISTEN` (e.g. `:5514`) and the analyzer listens for Suricata **EVE
 stream (Suricata severity 1 → critical, 2 → warning, 3+ → info; tunable via the `ids` rule).
 Enabling the **dns** and **tls** EVE types additionally teaches the analyzer real hostnames (DNS
 answers, TLS SNI), shown next to IPs everywhere.
+
+The **IDS** page shows what actually arrives: listener health (receiving / quiet-for / last error),
+a per-event-type table (`alert`, `dns.answer`, `dns.query`, `tls`, … with what each is used for and
+which are ignored), the malformed/truncated counter, and every stored alert with its raw EVE record
+one click away. Alerts raised from Suricata link back to the exact event (`ids_event_id`), and
+`GET /api/v1/ids/events/{id}` returns it with the full JSON.
 
 pfSense setup: install the **suricata** package, add it on the **LAN** interface (pre-NAT, so
 alerts name the device), enable **ET Open** rules, and in the interface's *EVE Output Settings*

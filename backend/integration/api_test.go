@@ -886,6 +886,32 @@ func TestSuricataAndNames(t *testing.T) {
 	if len(al.Items) != 1 || al.Items[0].Severity != "critical" || al.Items[0].Host == nil || *al.Items[0].Host != "10.0.0.5" {
 		t.Fatalf("ids alert: %+v", al.Items)
 	}
+	// The alert links to the exact stored event, and the event endpoint returns its raw EVE record.
+	var details map[string]any
+	_ = json.Unmarshal(al.Items[0].Details, &details)
+	evID, _ := details["ids_event_id"].(float64)
+	if evID <= 0 {
+		t.Fatalf("alert details lack ids_event_id: %s", al.Items[0].Details)
+	}
+	var one db.IDSEvent
+	if code := e.get(t, fmt.Sprintf("/api/v1/ids/events/%d", int64(evID)), &one); code != 200 {
+		t.Fatalf("ids event by id: http %d", code)
+	}
+	if one.ID != int64(evID) || one.SID == nil || *one.SID != 2404000 || !bytes.Contains(one.Raw, []byte("ET CNC Feodo")) || one.DstName == nil || *one.DstName != "Kiosk" {
+		t.Fatalf("ids event by id: %+v raw=%s", one, one.Raw)
+	}
+	if code := e.get(t, "/api/v1/ids/events/999999999", nil); code != 404 {
+		t.Errorf("missing ids event: http %d, want 404", code)
+	}
+	// Per-type ingest counters: alert, dns.answer and tls each seen once; the listener knows what they feed.
+	st := e.ids.Stats()
+	seen := map[string]suricata.TypeStat{}
+	for _, ts := range st.Types {
+		seen[ts.Type] = ts
+	}
+	if seen["alert"].Count != 1 || seen["alert"].Used != "alerts" || seen["dns.answer"].Count != 1 || seen["dns.answer"].Used != "names" || seen["tls"].Used != "names" || st.LastEvent == nil {
+		t.Errorf("ingest counters: %+v", st.Types)
+	}
 
 	// Names surface on the enrichment record and host row.
 	var names struct {

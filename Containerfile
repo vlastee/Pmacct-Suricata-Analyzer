@@ -23,7 +23,8 @@ COPY --from=frontend /app/dist /app/static
 ENV STATIC_DIR=/app/static LISTEN_ADDR=:8080
 USER app
 EXPOSE 8080
-# Derive the port from LISTEN_ADDR at runtime so a custom port still passes the health check
-# (the escaped \$ leaves the expansion for the container shell, not the Dockerfile parser).
-HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf "http://127.0.0.1:\${LISTEN_ADDR##*:}/healthz" || exit 1
+# Derive the port from LISTEN_ADDR at runtime so a custom port still passes the health check.
+# Dockerfiles do not expand variables in HEALTHCHECK, so ${...} reaches the container shell as-is;
+# do NOT escape the $ — "\$" would make the shell pass the literal text "${LISTEN_ADDR##*:}" to curl.
+HEALTHCHECK --interval=30s --timeout=5s CMD curl -sf "http://127.0.0.1:${LISTEN_ADDR##*:}/healthz" || exit 1
 ENTRYPOINT ["/app/server"]

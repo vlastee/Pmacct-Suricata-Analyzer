@@ -39,6 +39,11 @@ export interface IDSEvent {
   action: string | null; app_proto: string | null; src_nickname: string | null; dst_nickname: string | null; raw?: any
 }
 export interface IDSSignatureStat { sid: number; signature: string; category: string | null; severity: number | null; count: number; sources: number; last_seen: string }
+export interface IDSTypeStat { type: string; count: number; last: string; used?: string }
+export interface IDSListener {
+  listen: string; started?: string; received: number; alerts: number; names: number; dropped: number; malformed: number; ignored: number
+  last_event?: string; last_error?: string; last_error_at?: string; types: IDSTypeStat[]
+}
 export interface Nickname { ip: string; nickname: string; note: string | null; updated_at: string }
 export interface HostRisk { score: number; critical: number; warning: number; info: number }
 export interface HostStat {
@@ -135,7 +140,8 @@ export const api = {
     request<RuleInfo>(`/api/v1/rules/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   runRule: (name: string) => request<{ raised: Alert[] }>(`/api/v1/rules/${encodeURIComponent(name)}/run`, { method: 'POST' }),
   idsEvents: (r: Range, o: { ip?: string; sid?: number; limit?: number } = {}) => request<{ items: IDSEvent[] }>(`/api/v1/ids/events${qs({ ...r, ...o })}`),
-  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: any }>(`/api/v1/ids/summary${qs(r)}`),
+  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener }>(`/api/v1/ids/summary${qs(r)}`),
+  idsEvent: (id: number) => request<IDSEvent>(`/api/v1/ids/events/${id}`),
   ipNames: (ip: string) => request<{ items: IPName[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/names`),
   systemStatus: () => request<any>('/api/v1/system/status'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),

@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/rules/{name}", s.updateRule)
 	mux.HandleFunc("POST /api/v1/rules/{name}/run", s.runRule)
 	mux.HandleFunc("GET /api/v1/ids/events", s.idsEvents)
+	mux.HandleFunc("GET /api/v1/ids/events/{id}", s.idsEvent)
 	mux.HandleFunc("GET /api/v1/ids/summary", s.idsSummary)
 	mux.HandleFunc("GET /api/v1/ips/{ip}/names", s.ipNames)
 	mux.HandleFunc("GET /api/v1/system/status", s.systemStatus)
@@ -961,6 +962,25 @@ func (s *Server) idsEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// idsEvent returns one stored IDS event including its raw EVE record (the expand view / deep links).
+func (s *Server) idsEvent(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid event id")
+		return
+	}
+	ev, err := s.DB.GetIDSEvent(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if ev == nil {
+		writeErr(w, http.StatusNotFound, "no such IDS event")
+		return
+	}
+	writeJSON(w, http.StatusOK, ev)
 }
 
 func (s *Server) idsSummary(w http.ResponseWriter, r *http.Request) {

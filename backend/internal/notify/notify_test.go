@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,5 +58,26 @@ func TestDispatcherWebhookAndFilter(t *testing.T) {
 	mu.Unlock()
 	if s := d.Stats(); s.Sent != 1 {
 		t.Errorf("sent=%d", s.Sent)
+	}
+}
+
+// A non-2xx reply must carry the service's own explanation (Telegram's "chat not found" etc.),
+// not just the status code, so "Send test" is actionable.
+func TestPostJSONErrorIncludesBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("{\"ok\":false,\"error_code\":400,\n  \"description\":\"Bad Request: chat not found\"}"))
+	}))
+	defer srv.Close()
+	ch := &Webhook{URL: srv.URL, Client: srv.Client()}
+	err := ch.Send(context.Background(), Message{Title: "t", Body: "b"})
+	if err == nil {
+		t.Fatal("expected an error for http 400")
+	}
+	if !strings.Contains(err.Error(), "http 400") || !strings.Contains(err.Error(), "chat not found") {
+		t.Fatalf("error should carry status and body, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "\n") {
+		t.Fatalf("body should be whitespace-collapsed, got: %q", err.Error())
 	}
 }

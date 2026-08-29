@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/smtp"
@@ -285,6 +286,12 @@ func postJSON(ctx context.Context, c *http.Client, url string, headers map[strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		// Surface the service's own explanation (e.g. Telegram's "Bad Request: chat not found")
+		// instead of a bare status code, so "Send test" tells the user what to fix.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if d := strings.Join(strings.Fields(string(snippet)), " "); d != "" {
+			return fmt.Errorf("http %d: %s", resp.StatusCode, d)
+		}
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
 	return nil
@@ -331,6 +338,12 @@ func (n *Ntfy) Send(ctx context.Context, m Message) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
+		// Surface the service's own explanation (e.g. Telegram's "Bad Request: chat not found")
+		// instead of a bare status code, so "Send test" tells the user what to fix.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if d := strings.Join(strings.Fields(string(snippet)), " "); d != "" {
+			return fmt.Errorf("http %d: %s", resp.StatusCode, d)
+		}
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
 	return nil
