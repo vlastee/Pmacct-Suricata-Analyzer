@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type HostDetail, type IPInfo, type IPNote } from '../lib/api'
+  import { api, type HostDetail, type IPInfo, type IPNote, type ProcessStat } from '../lib/api'
   import { currentRange, router } from '../lib/router.svelte'
   import { fmtBytes, fmtCompact, fmtTime, flag, fmtAgo } from '../lib/format'
   import AreaChart from '../lib/components/AreaChart.svelte'
@@ -38,6 +38,14 @@
   let info = $derived(data?.host.info ?? null)
   let vt = $derived(info?.vt ?? null)
 
+  // endpoint agent data (which program made the connections)
+  let procs = $state<ProcessStat[]>([])
+  let via = $state<Record<string, string[]>>({})
+  let agentCount = $state(0)
+  async function loadProcs() {
+    try { const r = await api.hostProcesses(ip, currentRange()); procs = r.items; via = r.via; agentCount = r.agents } catch { procs = []; via = {}; agentCount = 0 }
+  }
+  $effect(() => { void reloadKey; void ip; void router.route.query.toString(); loadProcs() })
   // notes journal
   let notes = $state<IPNote[]>([])
   let noteInput2 = $state('')
@@ -181,6 +189,27 @@
         <a class="small" href={router.href('/alerts', { host: ip })}>All alerts for this host →</a>
       </div>
     {/if}
+    {#if procs.length}
+      <div class="card overflow">
+        <h3>Programs <span class="muted">· from the endpoint agent</span></h3>
+        <table>
+          <thead><tr><th>Program</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th>Top destinations</th><th>Last</th></tr></thead>
+          <tbody>
+            {#each procs as p (p.exe + p.user)}
+              <tr>
+                <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe}</strong><div class="small muted mono" style="max-width:320px; overflow:hidden; text-overflow:ellipsis">{p.exe}</div></td>
+                <td class="small">{p.user || '–'}</td>
+                <td class="num">{fmtCompact(p.conns)}</td>
+                <td class="num">{p.bytes ? fmtBytes(p.bytes) : '–'}</td>
+                <td class="num">{p.peers}</td>
+                <td class="small mono">{p.top_peers.join(', ')}</td>
+                <td class="small" title={fmtTime(p.last_seen)}>{fmtAgo(p.last_seen)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
     <div class="card" id="notes">
       <h3>Notes {#if notes.length}<span class="muted">· {notes.length}</span>{/if}</h3>
       {#if nickNote}<div class="small" style="margin-bottom:.5rem"><span class="muted">nickname note:</span> {nickNote}</div>{/if}
@@ -305,7 +334,7 @@
       <h3>Peers ({data.peers.length})</h3>
       <table>
         <thead><tr>
-          <Th sorter={peerSort} key="peer" label="Peer" />
+          <Th sorter={peerSort} key="peer" label="Peer" />{#if agentCount}<th title="program that made the connection (endpoint agent)">via</th>{/if}
           <Th sorter={peerSort} key="bytes" label="Total" num />
           <Th sorter={peerSort} key="bytes_in" label="Received" num />
           <Th sorter={peerSort} key="bytes_out" label="Sent" num />
@@ -314,7 +343,7 @@
         </tr></thead>
         <tbody>
           {#each peers as p (p.ip)}
-            <tr><td><IPLabel ip={p.ip} nickname={p.nickname} local={p.local} info={p.info} names={p.names} risk={p.risk} /></td>
+            <tr><td><IPLabel ip={p.ip} nickname={p.nickname} local={p.local} info={p.info} names={p.names} risk={p.risk} /></td>{#if agentCount}<td class="small">{(via[p.ip] ?? []).join(', ') || '–'}</td>{/if}
               <td class="num">{fmtBytes(p.bytes)}</td><td class="num">{fmtBytes(p.bytes_in)}</td><td class="num">{fmtBytes(p.bytes_out)}</td>
               <td class="num">{fmtCompact(p.flows)}</td><td class="num">{fmtTime(p.last_seen)}</td></tr>
           {:else}<tr><td colspan="6" class="empty">No traffic in this window</td></tr>{/each}

@@ -1,4 +1,4 @@
-.PHONY: all build backend frontend run dev test unit integration image up down clean
+.PHONY: all build backend frontend run dev test unit integration image up down clean agent agent-test
 
 all: build
 
@@ -47,5 +47,14 @@ up:
 down:
 	podman compose down
 
+## Endpoint agent (Rust). Linux build + Windows cross-build (needs the x86_64-pc-windows-gnu target and mingw-w64).
+agent:
+	cd agent && cargo build --release
+	cd agent && cargo build --release --target x86_64-pc-windows-gnu
+	@ls -la agent/target/release/pmacct-agent agent/target/x86_64-pc-windows-gnu/release/pmacct-agent.exe
+
+agent-test:
+	cd agent && cargo test
+
 clean:
-	rm -rf backend/bin frontend/dist
+	rm -rf backend/bin frontend/dist agent/target

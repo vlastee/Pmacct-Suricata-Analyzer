@@ -31,6 +31,13 @@ export interface TLSInfo {
   enabled: boolean; addr?: string; url?: string; ca_subject?: string; ca_fingerprint_sha256?: string; ca_spki_sha256?: string
   ca_not_after?: string; hosts?: string[]; leaf_not_after?: string; leaf_issued_at?: string
 }
+export interface Agent {
+  id: number; name: string; hostname: string; os: string; arch: string; version: string; ips: string[]; capture: string
+  enrolled_at: string; last_seen: string | null; last_ip: string | null; events_total: number; last_batch: number; dropped: number
+  revoked_at: string | null; note: string
+}
+export interface EnrollToken { enroll_token: string; expires_at: string; server_url: string; tls_required: boolean; ca_fingerprint_sha256?: string; ca_spki_sha256?: string }
+export interface ProcessStat { exe: string; name: string; user: string; sha256: string; conns: number; bytes: number; peers: number; ports: number; last_seen: string; top_peers: string[] }
 export interface IPNote { id: number; ip: string; body: string; author: string; created_at: string }
 export interface Exclusion { id: number; pattern: string; kind: 'ip' | 'cidr' | 'name'; note: string; created_at: string }
 export interface AlertRetention { auto_resolve_days: number; delete_resolved_days: Record<string, number> }
@@ -175,6 +182,14 @@ export const api = {
   systemStatus: () => request<any>('/api/v1/system/status'),
   tlsInfo: () => request<TLSInfo>('/api/v1/tls/info'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
+  agents: () => request<{ items: Agent[]; tls_required: boolean }>('/api/v1/agents'),
+  createEnrollToken: (name: string) =>
+    request<EnrollToken>('/api/v1/agents/enroll-tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }),
+  updateAgent: (id: number, name: string, note: string) =>
+    request<Agent>(`/api/v1/agents/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, note }) }),
+  revokeAgent: (id: number) => request<{ ok: boolean }>(`/api/v1/agents/${id}/revoke`, { method: 'POST' }),
+  deleteAgent: (id: number) => request<{ deleted: number }>(`/api/v1/agents/${id}`, { method: 'DELETE' }),
+  hostProcesses: (ip: string, r: Range) => request<{ items: ProcessStat[]; via: Record<string, string[]>; agents: number }>(`/api/v1/hosts/${encodeURIComponent(ip)}/processes${qs(r)}`),
   ipNotes: (ip: string) => request<{ items: IPNote[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`),
   addIPNote: (ip: string, body: string) =>
     request<IPNote>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) }),

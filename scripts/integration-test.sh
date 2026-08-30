@@ -129,6 +129,23 @@ check "CA certificate downloadable"           bash -c "curl -sf '$BASE/api/v1/tl
 check "https verifies with the CA"            bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/healthz' | grep -q '\"status\":\"ok\"'"
 check "https rejected without the CA"         bash -c "! curl -sf '$TLS_BASE/healthz' >/dev/null 2>&1"
 check "https serves the API"                  bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/api/v1/tls/info' | grep -q '\"enabled\":true'"
+# Endpoint agent: the real Rust binary enrolls over pinned TLS and heartbeats (skipped when not built).
+AGENT_BIN="$ROOT/agent/target/release/pmacct-agent"
+if [ -x "$AGENT_BIN" ]; then
+  AGENT_DIR="$(mktemp -d)"; export PMACCT_AGENT_DIR="$AGENT_DIR"
+  ENROLL_JSON="$(curl -sf -X POST -H 'Content-Type: application/json' -d '{"name":"it-agent"}' "$BASE/api/v1/agents/enroll-tokens")"
+  ENROLL_TOKEN="$(printf '%s' "$ENROLL_JSON" | sed -n 's/.*"enroll_token":"\([^"]*\)".*/\1/p')"
+  CA_PIN="$(printf '%s' "$ENROLL_JSON" | sed -n 's/.*"ca_spki_sha256":"\([^"]*\)".*/\1/p')"
+  check "agent rejects a wrong CA pin"          bash -c "! '$AGENT_BIN' enroll --server '$TLS_BASE' --token '$ENROLL_TOKEN' --ca-pin AAAA >/dev/null 2>&1"
+  check "agent enrolls over pinned TLS"         bash -c "'$AGENT_BIN' enroll --server '$TLS_BASE' --token '$ENROLL_TOKEN' --ca-pin '$CA_PIN' 2>&1 | grep -q 'enrolled as \"it-agent\"'"
+  check "agent refuses plain http"              bash -c "! curl -sf -X POST -H 'Authorization: Bearer x' '$BASE/api/v1/agent/events' -d '{}' >/dev/null 2>&1"
+  check "agent heartbeat accepted"              bash -c "'$AGENT_BIN' status 2>&1 | grep -q 'heartbeat   ok'"
+  check "agent listed as online"                bash -c "json /api/v1/agents | grep -q '\"name\":\"it-agent\"'"
+  check "agent snapshot runs"                   bash -c "'$AGENT_BIN' snapshot | head -1 | grep -q 'capture=poll'"
+  rm -rf "$AGENT_DIR"
+else
+  log "SKIP  endpoint agent checks (build with: cd agent && cargo build --release)"
+fi
 
 if [ "$fail" != 0 ]; then
   echo "--- app logs ---" >&2; podman logs "$APP" >&2

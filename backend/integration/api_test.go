@@ -635,6 +635,140 @@ func TestAlertRetentionSettings(t *testing.T) {
 	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule = 'ret_test'`)
 }
 
+// sendAuth is send() with a bearer token (agent endpoints).
+func (e *env) sendAuth(t *testing.T, method, path, token string, body any, out any) int {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rd = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, e.srv.URL+path, rd)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		t.Logf("%s %s -> %d: %s", method, path, resp.StatusCode, raw)
+	}
+	if out != nil && resp.StatusCode < 300 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			t.Fatalf("%s %s: decode %v: %s", method, path, err, raw)
+		}
+	}
+	return resp.StatusCode
+}
+
+func TestAgents(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM agents; DELETE FROM agent_enroll_tokens; DELETE FROM alerts WHERE rule = 'agent_rule'`)
+	e.send(t, "DELETE", "/api/v1/rules/custom/agent_rule", nil, nil)
+	t.Cleanup(func() {
+		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM agents; DELETE FROM agent_enroll_tokens; DELETE FROM alerts WHERE rule = 'agent_rule'`)
+		e.send(t, "DELETE", "/api/v1/rules/custom/agent_rule", nil, nil)
+	})
+	// Admin mints an enrollment token.
+	var tok struct {
+		EnrollToken string `json:"enroll_token"`
+		ServerURL   string `json:"server_url"`
+	}
+	if code := e.send(t, "POST", "/api/v1/agents/enroll-tokens", map[string]any{"name": "petro-pc"}, &tok); code != 201 || tok.EnrollToken == "" || tok.ServerURL == "" {
+		t.Fatalf("enroll token: http %d %+v", code, tok)
+	}
+	// Agent enrolls; the token is single-use.
+	enroll := map[string]any{"enroll_token": tok.EnrollToken, "hostname": "PETRO-PC", "os": "windows", "arch": "amd64", "version": "0.1.0", "ips": []string{"192.168.1.10", "127.0.0.1", "fe80::1"}}
+	var en struct {
+		AgentID    int64    `json:"agent_id"`
+		AgentToken string   `json:"agent_token"`
+		Name       string   `json:"name"`
+		Local      []string `json:"local_networks"`
+	}
+	if code := e.send(t, "POST", "/api/v1/agent/enroll", enroll, &en); code != 201 || en.AgentToken == "" || en.Name != "petro-pc" || len(en.Local) == 0 {
+		t.Fatalf("enroll: http %d %+v", code, en)
+	}
+	if code := e.send(t, "POST", "/api/v1/agent/enroll", enroll, nil); code != 401 {
+		t.Errorf("reused enroll token: http %d, want 401", code)
+	}
+	// Events need the bearer token; a batch with one bad row is partially accepted.
+	minute := time.Now().UTC().Truncate(time.Minute)
+	batch := map[string]any{"hostname": "PETRO-PC", "version": "0.1.1", "ips": []string{"192.168.1.10"}, "capture": "poll", "dropped": 2,
+		"conns": []map[string]any{
+			{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443, "exe": `C:\Program Files\Chrome\chrome.exe`, "user": "petro", "count": 5, "bytes": 1234},
+			{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443, "exe": `C:\Program Files\Chrome\chrome.exe`, "user": "petro", "count": 2},
+			{"minute": minute, "src": "192.168.1.10", "proto": "udp", "dst": "1.1.1.1", "dst_port": 53, "exe": "/usr/bin/svchost", "name": "svchost", "user": "SYSTEM"},
+			{"minute": minute, "src": "not-an-ip", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443},
+		}}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", "", batch, nil); code != 401 {
+		t.Errorf("events without token: http %d, want 401", code)
+	}
+	var res struct {
+		Accepted int `json:"accepted"`
+		Rejected int `json:"rejected"`
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, batch, &res); code != 200 || res.Accepted != 3 || res.Rejected != 1 {
+		t.Fatalf("events: http %d %+v", code, res)
+	}
+	// Admin view reflects the heartbeat.
+	var list struct {
+		Items []db.Agent `json:"items"`
+	}
+	e.get(t, "/api/v1/agents", &list)
+	if len(list.Items) != 1 || list.Items[0].Version != "0.1.1" || list.Items[0].Capture != "poll" || list.Items[0].Dropped != 2 || list.Items[0].EventsTotal != 3 || len(list.Items[0].IPs) != 1 {
+		t.Fatalf("agents list: %+v", list.Items)
+	}
+	// Host processes: duplicates merged (count 7), name derived from the exe.
+	var procs struct {
+		Items  []db.ProcessStat    `json:"items"`
+		Via    map[string][]string `json:"via"`
+		Agents int                 `json:"agents"`
+	}
+	e.get(t, "/api/v1/hosts/192.168.1.10/processes?since=1h", &procs)
+	if procs.Agents != 1 || len(procs.Items) != 2 || procs.Items[0].Name != "chrome.exe" || procs.Items[0].Conns != 7 || procs.Items[0].Bytes != 1234 || procs.Items[0].User != "petro" {
+		t.Fatalf("processes: %+v", procs.Items)
+	}
+	if v := procs.Via["8.8.8.8"]; len(v) != 1 || v[0] != "chrome.exe (petro)" {
+		t.Fatalf("via map: %+v", procs.Via)
+	}
+	// A rule finding host→peer gets "via" from the agent data (details + notification text).
+	rule := map[string]any{"name": "agent_rule", "title": "agent via", "kind": "sql", "severity": "warning", "interval": "1m", "window": "1h",
+		"sql": "SELECT '192.168.1.10' AS host, '8.8.8.8' AS peer, 443 AS port"}
+	if code := e.send(t, "POST", "/api/v1/rules/custom", rule, nil); code != 201 {
+		t.Fatalf("create rule: http %d", code)
+	}
+	var run struct {
+		Raised []db.Alert `json:"raised"`
+	}
+	if code := e.post(t, "/api/v1/rules/agent_rule/run", &run); code != 200 || len(run.Raised) != 1 || !strings.Contains(string(run.Raised[0].Details), `"via":["chrome.exe (petro)"]`) {
+		t.Fatalf("via on alert: http %d %s", code, func() string {
+			if len(run.Raised) > 0 {
+				return string(run.Raised[0].Details)
+			}
+			return "no alerts"
+		}())
+	}
+	// Revoke → token stops working; delete → agent and its data gone.
+	if code := e.send(t, "POST", fmt.Sprintf("/api/v1/agents/%d/revoke", en.AgentID), nil, nil); code != 200 {
+		t.Fatalf("revoke: http %d", code)
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, map[string]any{"conns": []any{}}, nil); code != 401 {
+		t.Errorf("revoked token: http %d, want 401", code)
+	}
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/agents/%d", en.AgentID), nil, nil); code != 200 {
+		t.Fatalf("delete: http %d", code)
+	}
+	e.get(t, "/api/v1/hosts/192.168.1.10/processes?since=1h", &procs)
+	if len(procs.Items) != 0 || procs.Agents != 0 {
+		t.Errorf("data should be gone after delete: %+v", procs)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

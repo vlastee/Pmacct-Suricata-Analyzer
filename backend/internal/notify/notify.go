@@ -273,6 +273,20 @@ func (d *Dispatcher) SendTest(ctx context.Context) map[string]string {
 	return out
 }
 
+// viaOf extracts the agent-reported programs from an alert's details ("via": [...]).
+func viaOf(details []byte) string {
+	if len(details) == 0 {
+		return ""
+	}
+	var d struct {
+		Via []string `json:"via"`
+	}
+	if json.Unmarshal(details, &d) != nil || len(d.Via) == 0 {
+		return ""
+	}
+	return strings.Join(d.Via, ", ")
+}
+
 // maxBodyChars keeps a batch under Telegram's 4096-character message limit with room for the link.
 const maxBodyChars = 3600
 
@@ -312,6 +326,9 @@ func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 		}
 		if a.Count > 1 {
 			fmt.Fprintf(&b, " (x%d)", a.Count)
+		}
+		if via := viaOf(a.Details); via != "" {
+			fmt.Fprintf(&b, " · via %s", via)
 		}
 		b.WriteString("\n")
 		if a.Host != nil {

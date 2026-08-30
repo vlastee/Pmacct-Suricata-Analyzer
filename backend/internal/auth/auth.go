@@ -241,7 +241,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		}
 		path := r.URL.Path
 		// Public: health, the login endpoint, and everything that is not the API (the SPA shell/assets).
-		if path == "/healthz" || path == "/api/v1/auth/login" || strings.HasPrefix(path, "/api/v1/tls/") || !strings.HasPrefix(path, "/api/") {
+		if path == "/healthz" || path == "/api/v1/auth/login" || strings.HasPrefix(path, "/api/v1/tls/") || strings.HasPrefix(path, "/api/v1/agent/") || !strings.HasPrefix(path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -6,3 +6,5 @@ backend/bin/
 deploy/postgres_data/
 deploy/grafana_data/
 deploy/analyzer.env
+agent/target/
+agent/**/target/

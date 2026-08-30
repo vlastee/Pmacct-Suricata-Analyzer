@@ -277,6 +277,44 @@ they're recorded and delivered when the window ends.
 Per-host **rollups** (`host_hourly`, `host_peer_daily`) are maintained by the worker and kept for
 months, so baselines and "new destination" survive the 7-day raw-flow retention.
 
+## Endpoint agents (which program made the connection)
+
+pmacct sees *which machine* talked to *which peer*; an **endpoint agent** on a Windows or Linux
+machine adds *which program*: alerts and host pages then say `via chrome.exe (petro)` versus
+`via svchost.exe`, and the host page gets a **Programs** table. The agent lives in
+[`agent/`](agent/) (Rust: `agent-core` shared library + `pmacct-agent` binary; `make agent`
+builds Linux and Windows).
+
+1. Enable HTTPS (`TLS_LISTEN_ADDR`) — agent endpoints refuse plain HTTP when TLS is configured, so
+   tokens never cross the LAN in clear.
+2. **Agents** page → *Create enrollment token* (single-use, 24 h). Copy the printed command.
+3. On the machine, as root / administrator:
+   ```
+   pmacct-agent enroll --server https://10.0.0.210:8091 --token <token> --ca-pin <ca_spki_sha256>
+   pmacct-agent install        # systemd unit on Linux, Windows service on Windows
+   ```
+   The agent fetches the server's CA, checks it against the pin, and from then on trusts **only**
+   that CA. Config: `/etc/pmacct-agent/agent.toml` or `%ProgramData%\pmacct-agent\agent.toml`.
+
+What it reports: per minute, per (local address, program, user, destination, port, protocol) a
+count — no payloads, no command lines unless `--send-cmdline`. Capture backends (`--capture`,
+default `auto`):
+
+* **ebpf** (Linux, root, cgroup v2, kernel ≥ 5.8): a small eBPF program on the root cgroup's
+  `connect4/6` + `sendmsg4/6` hooks reports **every** outgoing connection and UDP datagram the
+  instant it happens, with PID/UID/comm — nothing is missed. Source: [`agent/bpf/conn.bpf.c`](agent/bpf/conn.bpf.c),
+  compiled object committed so the Rust build needs no clang (`make -C agent/bpf` to rebuild).
+* **poll**: reads the OS socket table every second (Linux `/proc/net` + `/proc/*/fd`, Windows
+  `GetExtendedTcpTable`); connections shorter than a second can be missed. `auto` uses ebpf when
+  it can be loaded and falls back to poll otherwise. ETW for Windows is next.
+
+`sudo pmacct-agent snapshot --capture ebpf --seconds 10` shows live attributed connections — the
+quickest way to check the backend works on a machine.
+Batches upload every 30 s (gzip), are spooled on disk when the server is unreachable, and an empty
+batch every minute is the heartbeat shown on the Agents page. Data is kept 30 days
+(`endpoint_conns`). API: `POST /api/v1/agent/enroll`, `POST /api/v1/agent/events` (bearer token),
+admin `GET/POST/PUT/DELETE /api/v1/agents…`, `GET /api/v1/hosts/{ip}/processes`.
+
 ## HTTPS
 
 Set `TLS_LISTEN_ADDR` (the deploy compose uses `:8091`) and the analyzer serves HTTPS itself — no

@@ -317,6 +317,11 @@ func (w *Worker) RunRollupsOnce(ctx context.Context) int {
 		} else {
 			_ = w.DB.SetSetting(ctx, "last_prune", now)
 		}
+		if n, err := w.DB.PruneEndpointConns(ctx, 30*24*time.Hour); err != nil {
+			slog.Error("prune endpoint_conns", "err", err)
+		} else if n > 0 {
+			slog.Info("pruned endpoint connection aggregates", "rows", n)
+		}
 		if ret, err := w.DB.GetAlertRetention(ctx); err == nil {
 			if n, err := w.DB.PruneResolvedAlerts(ctx, ret); err != nil {
 				slog.Error("prune alerts", "err", err)

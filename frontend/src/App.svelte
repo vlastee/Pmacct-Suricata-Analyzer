@@ -14,6 +14,7 @@
   import Rules from './pages/Rules.svelte'
   import IDS from './pages/IDS.svelte'
   import Security from './pages/Security.svelte'
+  import Agents from './pages/Agents.svelte'
   import Login from './pages/Login.svelte'
   import ChangePassword from './pages/ChangePassword.svelte'
   import { auth } from './lib/auth.svelte'
@@ -41,7 +42,7 @@
     { path: '/flows', label: 'Flows' }, { path: '/threats', label: 'Threats' }, { path: '/ids', label: 'IDS' },
     { path: '/rules', label: 'Rules' }, { path: '/nicknames', label: 'Nicknames' }, { path: '/enrichment', label: 'Enrichment' },
   ]
-  let navItems = $derived(auth.user?.is_admin || auth.authDisabled ? [...nav, { path: '/security', label: 'Security' }] : nav)
+  let navItems = $derived(auth.user?.is_admin || auth.authDisabled ? [...nav, { path: '/agents', label: 'Agents' }, { path: '/security', label: 'Security' }] : nav)
   let parts = $derived(router.route.parts)
   let section = $derived(parts[0] ?? '')
 </script>
@@ -97,6 +98,8 @@
     <Rules {reloadKey} />
   {:else if section === 'ids'}
     <IDS {reloadKey} />
+  {:else if section === 'agents'}
+    <Agents {reloadKey} />
   {:else if section === 'security'}
     <Security {reloadKey} />
   {:else}

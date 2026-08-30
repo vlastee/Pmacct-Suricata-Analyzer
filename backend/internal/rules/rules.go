@@ -507,7 +507,34 @@ func (e *Engine) evaluate(ctx context.Context, r *Rule) ([]db.Finding, effective
 		kept = append(kept, f)
 	}
 	kept, err = e.applyExclusions(ctx, kept)
-	return kept, ef, err
+	if err != nil {
+		return nil, ef, err
+	}
+	e.attachProcesses(ctx, kept, w)
+	return kept, ef, nil
+}
+
+// attachProcesses adds details["via"] = programs that made the host→peer connection, from
+// endpoint agents. Skipped entirely when no agent is enrolled.
+func (e *Engine) attachProcesses(ctx context.Context, findings []db.Finding, w db.Window) {
+	if len(findings) == 0 || e.DB == nil {
+		return
+	}
+	if n, err := e.DB.CountActiveAgents(ctx); err != nil || n == 0 {
+		return
+	}
+	for i := range findings {
+		f := &findings[i]
+		if f.Host == "" || f.Peer == "" {
+			continue
+		}
+		if via, err := e.DB.ProcessesFor(ctx, f.Host, f.Peer, f.Port, w, 3); err == nil && len(via) > 0 {
+			if f.Details == nil {
+				f.Details = map[string]any{}
+			}
+			f.Details["via"] = via
+		}
+	}
 }
 
 func defaultTitle(r *Rule, f db.Finding) string {
@@ -661,6 +688,10 @@ func (e *Engine) RaiseIDS(ctx context.Context, f db.Finding) error {
 	} else if len(kept) == 0 {
 		return nil
 	}
+	now := e.Now().UTC()
+	fs := []db.Finding{f}
+	e.attachProcesses(ctx, fs, db.Window{Since: now.Add(-5 * time.Minute), Until: now})
+	f = fs[0]
 	a, err := e.DB.UpsertAlert(ctx, f)
 	if err != nil {
 		return err
