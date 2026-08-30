@@ -80,7 +80,7 @@ log "running Go integration tests"
 if [ "$E2E" = 0 ]; then log "skipping container e2e"; exit 0; fi
 
 log "loading fixture data for container e2e"
-podman exec "$PG" psql -U pmacct -d pmacct -q -c 'DROP TABLE IF EXISTS acct, proto, ip_info, ip_nicknames, alerts, settings, host_hourly, host_peer_daily, threat_lists, ids_events, ip_names, ip_reputation, schema_migrations CASCADE' >/dev/null
+podman exec "$PG" psql -U pmacct -d pmacct -q -c 'DROP TABLE IF EXISTS acct, proto, ip_info, ip_nicknames, alerts, settings, host_hourly, host_peer_daily, threat_lists, ids_events, ip_names, ip_reputation, file_intel, program_identity, lolbins, schema_migrations CASCADE' >/dev/null
 podman exec -i "$PG" psql -U pmacct -d pmacct -q < "$ROOT/backend/integration/fixtures/schema.sql" >/dev/null
 podman exec -i "$PG" psql -U pmacct -d pmacct -q < "$ROOT/backend/integration/fixtures/data.sql" >/dev/null
 
@@ -177,6 +177,10 @@ if [ -x "$AGENT_BIN" ]; then
   rm -rf "$UPD_DIR"
   check "agent listed as online"                bash -c "json /api/v1/agents | grep -q '\"name\":\"it-agent\"'"
   check "agent snapshot runs"                   bash -c "'$AGENT_BIN' snapshot | head -1 | grep -q 'capture=poll'"
+  # Identity facts: /bin/sh is owned by a package on any dpkg/apk/pacman host and hashed three ways.
+  check "agent identify reports package"        bash -c "'$AGENT_BIN' identify /bin/sh | grep -q '\"package\"'"
+  check "agent identify hashes the file"        bash -c "'$AGENT_BIN' identify /bin/sh | grep -q '\"md5\"'"
+  check "agent identify rejects missing file"   bash -c "! '$AGENT_BIN' identify /nonexistent/x >/dev/null 2>&1"
   rm -rf "$AGENT_DIR"
 else
   log "SKIP  endpoint agent checks (build with: cd agent && cargo build --release)"

@@ -24,6 +24,7 @@ type Fetcher struct {
 	Feeds    map[string]string
 	Client   *http.Client
 	Interval time.Duration
+	LOLBins  *LOLBins // optional: LOLBAS / GTFOBins catalogues, refreshed daily in the same loop
 
 	mu      sync.Mutex
 	lastRun time.Time
@@ -173,6 +174,18 @@ func (f *Fetcher) RefreshAll(ctx context.Context) {
 		f.lastRun = time.Now()
 		f.mu.Unlock()
 	}
+	if f.LOLBins != nil && f.LOLBins.Due() && ctx.Err() == nil {
+		res := f.LOLBins.Refresh(ctx)
+		f.mu.Lock()
+		if f.results == nil {
+			f.results = map[string]Result{}
+		}
+		for k, v := range res {
+			f.results[k] = v
+		}
+		f.lastRun = time.Now()
+		f.mu.Unlock()
+	}
 	// Lists that are no longer configured (a feed dropped from THREAT_FEEDS, or a retired
 	// default such as abuse.ch SSLBL) must not keep matching traffic.
 	if len(names) > 0 && f.DB != nil {
@@ -186,7 +199,7 @@ func (f *Fetcher) RefreshAll(ctx context.Context) {
 
 // Run refreshes on an interval until ctx is done.
 func (f *Fetcher) Run(ctx context.Context) {
-	if len(f.Feeds) == 0 {
+	if len(f.Feeds) == 0 && f.LOLBins == nil {
 		return
 	}
 	f.RefreshAll(ctx)

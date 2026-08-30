@@ -48,6 +48,8 @@
   {@const t = status.table}
   {@const geo = status.lanes?.geo}
   {@const vt = status.lanes?.vt}
+  {@const files = status.lanes?.files}
+  {@const fs = status.files}
   <div class="row" style="margin-bottom:1rem">
     <span class="badge {status.enabled ? 'good' : 'warning'}">{status.enabled ? 'enrichment enabled' : 'enrichment disabled'}</span>
     <span class="spacer"></span>
@@ -131,6 +133,26 @@
           {#if vt.enabled}· last run {fmtAgo(vt.last_run)} · {fmtNum(vt.failures)} failures since start{/if}
         </div>
       {/if}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1rem">
+    <h3>Program files lane {#if files}<span class="muted">· {files.provider}</span>{/if} {#if files && !files.enabled}<span class="badge warning">disabled</span>{/if}</h3>
+    {#if fs}
+      <div class="grid tiles">
+        <StatTile label="Identified programs" value={fmtNum(fs.identities)} sub="reported by agents ≥ 0.3" />
+        <StatTile label="Files" value={fmtNum(fs.files)} sub={`${fmtNum(fs.vt_pending)} awaiting VirusTotal`} />
+        <StatTile label="VirusTotal checked" value={fmtNum(fs.vt_checked)} sub={`${fmtNum(fs.vt_unknown)} never submitted`} />
+        <StatTile label="Flagged" value={fmtNum(fs.vt_flagged)} sub="by ≥ 1 engine" />
+        <StatTile label="Cymru MHR" value={fmtNum(fs.mhr_checked)} sub={`${fmtNum(fs.mhr_listed)} listed`} />
+        <StatTile label="LOLBAS / GTFOBins" value={fmtNum(fs.lolbins)} sub="catalogue entries" />
+      </div>
+    {/if}
+    <div class="small muted" style="margin-top:.75rem">
+      Agents (0.3+) report each program once: hashes, the owning package and whether the file still matches its manifest (Linux), or the Authenticode signer and version resource (Windows).
+      Hashes are then looked up — never the files — in the Team Cymru Malware Hash Registry (DNS, free) and, when a VirusTotal key is set, as VirusTotal file reports sharing the IP lane's quota; unsigned and unpackaged files go first.
+      Results appear in every program's <b>Explain</b> panel.
+      {#if files?.enabled}· last run {fmtAgo(files.last_run)} · {fmtNum(files.lookups)} lookups / {fmtNum(files.failures)} failures since start{#if files.quota_hit} · <span class="badge warning">quota exhausted</span>{/if}{/if}
     </div>
   </div>
 

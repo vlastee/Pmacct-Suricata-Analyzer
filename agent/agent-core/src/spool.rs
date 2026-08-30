@@ -100,7 +100,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pmacct-agent-spool-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let spool = Spool::new(dir.clone(), 2, 1 << 20);
-        let batch = |n: u64| EventsBatch { hostname: "h".into(), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![] };
+        let batch = |n: u64| EventsBatch { hostname: "h".into(), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![], programs: vec![] };
         spool.push(&batch(1)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         spool.push(&batch(2)).unwrap();
@@ -118,7 +118,7 @@ mod tests {
     fn byte_cap_evicts_oldest_and_refuses_oversize() {
         let dir = std::env::temp_dir().join(format!("pmacct-agent-spool-bytes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let batch = |n: u64| EventsBatch { hostname: "h".repeat(40), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![] };
+        let batch = |n: u64| EventsBatch { hostname: "h".repeat(40), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![], programs: vec![] };
         let one = serde_json::to_vec(&batch(0)).unwrap().len() as u64;
         // Room for two batches, not three.
         let spool = Spool::new(dir.clone(), 100, one * 2 + one / 2);

@@ -109,12 +109,46 @@ func (s *Server) agentEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 type eventsRequest struct {
-	Hostname string            `json:"hostname"`
-	Version  string            `json:"version"`
-	IPs      []string          `json:"ips"`
-	Capture  string            `json:"capture"`
-	Dropped  int64             `json:"dropped"`
-	Conns    []db.EndpointConn `json:"conns"`
+	Hostname string               `json:"hostname"`
+	Version  string               `json:"version"`
+	IPs      []string             `json:"ips"`
+	Capture  string               `json:"capture"`
+	Dropped  int64                `json:"dropped"`
+	Conns    []db.EndpointConn    `json:"conns"`
+	Programs []db.ProgramIdentity `json:"programs"` // identity facts, once per new exe+hash
+}
+
+func hexOK(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validProgram normalises one identity record; false drops it.
+func validProgram(p *db.ProgramIdentity) bool {
+	p.Exe, p.SHA256, p.SHA1, p.MD5 = trunc(p.Exe, 512), strings.ToLower(p.SHA256), strings.ToLower(p.SHA1), strings.ToLower(p.MD5)
+	if p.Exe == "" || !hexOK(p.SHA256, 64) {
+		return false
+	}
+	if !hexOK(p.SHA1, 40) {
+		p.SHA1 = ""
+	}
+	if !hexOK(p.MD5, 32) {
+		p.MD5 = ""
+	}
+	if p.Size < 0 {
+		p.Size = 0
+	}
+	p.Origin, p.Package, p.PackageVersion = trunc(p.Origin, 32), trunc(p.Package, 128), trunc(p.PackageVersion, 64)
+	p.Signature, p.Signer, p.Company, p.Product = trunc(p.Signature, 16), trunc(p.Signer, 128), trunc(p.Company, 128), trunc(p.Product, 128)
+	p.FileVersion, p.Description, p.Note = trunc(p.FileVersion, 64), trunc(p.Description, 256), trunc(p.Note, 256)
+	return true
 }
 
 // agentEvents ingests a batch of per-minute aggregates; an empty batch is a heartbeat.
@@ -141,7 +175,7 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json body: "+err.Error())
 		return
 	}
-	if len(req.Conns) > maxAgentBatch {
+	if len(req.Conns) > maxAgentBatch || len(req.Programs) > 5000 {
 		writeErr(w, http.StatusRequestEntityTooLarge, "batch too large")
 		return
 	}
@@ -165,6 +199,20 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"accepted": n, "rejected": rejected, "server_time": now}
+	if len(req.Programs) > 0 {
+		progs := make([]db.ProgramIdentity, 0, len(req.Programs))
+		for _, p := range req.Programs {
+			if validProgram(&p) {
+				progs = append(progs, p)
+			}
+		}
+		pn, err := s.DB.UpsertProgramIdentities(r.Context(), a.ID, progs)
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
+		out["programs"] = pn
+	}
 	// Self-update: tell the agent what this image can hand out and whether it may take it.
 	if target := db.BuildTarget(a.OS, a.Arch); target != "" {
 		if b, ok := s.buildInfo(target); ok && b.Version != "" {

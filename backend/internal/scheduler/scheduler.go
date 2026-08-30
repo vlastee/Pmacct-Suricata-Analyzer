@@ -1,6 +1,8 @@
 // Package scheduler runs the periodic enrichment workers ("lanes"):
-//   - geo: ASN / geolocation / rDNS via ip-api.com or ipinfo.io
-//   - vt:  reputation via VirusTotal, under a strict daily quota
+//   - geo:   ASN / geolocation / rDNS via ip-api.com or ipinfo.io
+//   - vt:    IP reputation via VirusTotal, under a strict daily quota
+//   - files: executable hashes reported by agents — VirusTotal file reports (same quota) and
+//     the Team Cymru Malware Hash Registry (DNS, free)
 package scheduler
 
 import (
@@ -67,22 +69,49 @@ type RepLane struct {
 	l            *lane
 }
 
+// FilesLane looks up executable hashes reported by agents: VirusTotal file reports (sharing
+// the IP lane's API key and quota) and the Team Cymru Malware Hash Registry.
+type FilesLane struct {
+	VT              *enrich.VirusTotal // nil = no VT file reports
+	MHR             *enrich.MHR        // nil = no MHR
+	RefreshAfter    time.Duration      // re-check VT reports after this
+	MHRRefreshAfter time.Duration
+	BatchSize       int
+}
+
 // Worker owns the enrichment lanes and the maintenance jobs (rollups, pruning).
 type Worker struct {
-	DB  *db.DB
-	Cfg *config.Config
-	Geo *enrich.Enricher   // nil disables the geo lane
-	VT  *enrich.VirusTotal // nil disables the VT lane
-	Rep []*RepLane
+	DB    *db.DB
+	Cfg   *config.Config
+	Geo   *enrich.Enricher   // nil disables the geo lane
+	VT    *enrich.VirusTotal // nil disables the VT lane
+	Rep   []*RepLane
+	Files *FilesLane // nil disables the files lane
 
 	geo     *lane
 	vt      *lane
+	files   *lane
 	rollups *lane
+	vtQuota sync.Mutex // serialises the two consumers of the VirusTotal quota
 }
 
 // New constructs a Worker.
 func New(d *db.DB, cfg *config.Config, geo *enrich.Enricher, vt *enrich.VirusTotal) *Worker {
-	return &Worker{DB: d, Cfg: cfg, Geo: geo, VT: vt, geo: newLane(), vt: newLane(), rollups: newLane()}
+	return &Worker{DB: d, Cfg: cfg, Geo: geo, VT: vt, geo: newLane(), vt: newLane(), files: newLane(), rollups: newLane()}
+}
+
+// EnableFiles turns on the files lane.
+func (w *Worker) EnableFiles(f *FilesLane) {
+	if f.BatchSize <= 0 {
+		f.BatchSize = 50
+	}
+	if f.RefreshAfter <= 0 {
+		f.RefreshAfter = 30 * 24 * time.Hour
+	}
+	if f.MHRRefreshAfter <= 0 {
+		f.MHRRefreshAfter = 7 * 24 * time.Hour
+	}
+	w.Files = f
 }
 
 // AddRepLane registers a reputation lane.
@@ -117,6 +146,24 @@ func (w *Worker) Stats(ctx context.Context) map[string]LaneStats {
 		}
 	}
 	out["vt"] = snap(w.vt, v)
+	fl := LaneStats{Enabled: w.Files != nil, Provider: "virustotal files + cymru mhr", Interval: w.Cfg.EnrichInterval.String(), RateLimit: w.Cfg.VTRateLimit.String(), QuotaHit: w.files.quotaHit.Load()}
+	if w.Files != nil {
+		fl.RefreshAfter = w.Files.RefreshAfter.String()
+		switch {
+		case w.Files.VT != nil && w.Files.MHR != nil:
+		case w.Files.VT != nil:
+			fl.Provider = "virustotal files"
+		case w.Files.MHR != nil:
+			fl.Provider = "cymru mhr"
+		}
+		if w.Files.VT != nil {
+			fl.DailyQuota, fl.MonthlyQuota = w.Cfg.VTDailyQuota, w.Cfg.VTMonthlyQuota
+			if day, month, err := w.DB.VTUsage(ctx); err == nil {
+				fl.QuotaUsed, fl.QuotaUsedMonth = day, month
+			}
+		}
+	}
+	out["files"] = snap(w.files, fl)
 	for _, r := range w.Rep {
 		rs := LaneStats{Enabled: true, Provider: r.Provider.Name(), Interval: w.Cfg.EnrichInterval.String(), RefreshAfter: r.RefreshAfter.String(),
 			RateLimit: r.RateLimit.String(), DailyQuota: r.DailyQuota, QuotaHit: r.l.quotaHit.Load()}
@@ -131,7 +178,7 @@ func (w *Worker) Stats(ctx context.Context) map[string]LaneStats {
 
 // Kick requests an immediate run of all lanes (non-blocking).
 func (w *Worker) Kick() {
-	lanes := []*lane{w.geo, w.vt}
+	lanes := []*lane{w.geo, w.vt, w.files}
 	for _, r := range w.Rep {
 		lanes = append(lanes, r.l)
 	}
@@ -175,6 +222,10 @@ func (w *Worker) Run(ctx context.Context) {
 		wg.Add(1)
 		go loop(r.l, func(ctx context.Context) int { return w.RunRepOnce(ctx, r) })
 	}
+	if w.Files != nil {
+		wg.Add(1)
+		go loop(w.files, w.RunFilesOnce)
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -199,7 +250,112 @@ func (w *Worker) RunOnce(ctx context.Context) int {
 	for _, r := range w.Rep {
 		n += w.RunRepOnce(ctx, r)
 	}
+	n += w.RunFilesOnce(ctx)
 	return n
+}
+
+// RunFilesOnce performs one pass of the files lane: every pending hash through the Malware
+// Hash Registry (free), then VirusTotal file reports within what is left of the shared daily
+// quota. Returns the number of lookups attempted.
+func (w *Worker) RunFilesOnce(ctx context.Context) int {
+	if w.Files == nil || !w.files.running.CompareAndSwap(false, true) {
+		return 0
+	}
+	defer w.files.running.Store(false)
+	attempted := 0
+	if w.Files.MHR != nil {
+		cands, err := w.DB.FileMHRCandidates(ctx, w.Files.MHRRefreshAfter, 200)
+		if err != nil {
+			slog.Error("files lane: mhr candidates", "err", err)
+		}
+		for i, c := range cands {
+			if ctx.Err() != nil {
+				break
+			}
+			hash := c.MD5
+			if hash == "" {
+				hash = c.SHA1
+			}
+			attempted++
+			w.files.lookups.Add(1)
+			res, err := w.Files.MHR.Lookup(ctx, hash)
+			if err != nil {
+				w.files.failures.Add(1)
+				msg := err.Error()
+				res = &db.FileMHR{Status: "failed", Error: &msg}
+			}
+			if err := w.DB.UpsertFileMHR(ctx, c.SHA256, res); err != nil {
+				slog.Error("files lane: store mhr", "sha256", c.SHA256, "err", err)
+			}
+			if i < len(cands)-1 {
+				w.pause(ctx, 100*time.Millisecond)
+			}
+		}
+	}
+	if w.Files.VT != nil {
+		attempted += w.runFilesVT(ctx)
+	}
+	w.files.finish(attempted)
+	if attempted > 0 {
+		slog.Info("files lane pass", "attempted", attempted)
+	}
+	return attempted
+}
+
+func (w *Worker) runFilesVT(ctx context.Context) int {
+	w.vtQuota.Lock()
+	defer w.vtQuota.Unlock()
+	used, usedMonth, err := w.DB.VTUsage(ctx)
+	if err != nil {
+		slog.Error("files lane: quota", "err", err)
+		return 0
+	}
+	budget := int64(w.Cfg.VTDailyQuota) - used
+	if w.Cfg.VTMonthlyQuota > 0 && int64(w.Cfg.VTMonthlyQuota)-usedMonth < budget {
+		budget = int64(w.Cfg.VTMonthlyQuota) - usedMonth
+	}
+	if budget <= 0 {
+		w.files.quotaHit.Store(true)
+		return 0
+	}
+	limit := w.Files.BatchSize
+	if int64(limit) > budget {
+		limit = int(budget)
+	}
+	hashes, err := w.DB.FileVTCandidates(ctx, w.Files.RefreshAfter, limit)
+	if err != nil {
+		slog.Error("files lane: vt candidates", "err", err)
+		return 0
+	}
+	w.files.quotaHit.Store(false)
+	attempted := 0
+	for i, h := range hashes {
+		if ctx.Err() != nil {
+			break
+		}
+		attempted++
+		w.files.lookups.Add(1)
+		lctx, cancel := context.WithTimeout(ctx, w.Cfg.HTTPTimeout+5*time.Second)
+		res, err := w.Files.VT.LookupFile(lctx, h)
+		cancel()
+		if errors.Is(err, enrich.ErrQuotaExceeded) {
+			w.files.quotaHit.Store(true)
+			slog.Warn("files lane: virustotal quota exceeded; stopping pass", "attempted", attempted)
+			break
+		}
+		if err != nil {
+			w.files.failures.Add(1)
+			msg := err.Error()
+			res = &db.FileVT{Status: "failed", Error: &msg}
+		}
+		if err := w.DB.UpsertFileVT(ctx, h, res); err != nil {
+			slog.Error("files lane: store vt", "sha256", h, "err", err)
+		}
+		if i < len(hashes)-1 {
+			w.pause(ctx, w.Cfg.VTRateLimit)
+		}
+	}
+	return attempted
 }
 
 // RunRepOnce performs one pass of a reputation lane within its daily quota.
@@ -403,6 +559,8 @@ func (w *Worker) RunVTOnce(ctx context.Context) int {
 		return 0
 	}
 	defer w.vt.running.Store(false)
+	w.vtQuota.Lock()
+	defer w.vtQuota.Unlock()
 	used, usedMonth, err := w.DB.VTUsage(ctx)
 	if err != nil {
 		slog.Error("vt enrichment: quota", "err", err)

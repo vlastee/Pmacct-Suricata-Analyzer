@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,7 +63,7 @@ func setup(t *testing.T) *env {
 	t.Cleanup(d.Close)
 
 	// Fresh state for every test.
-	for _, stmt := range []string{"DROP TABLE IF EXISTS acct, proto, ip_info, ip_nicknames, alerts, settings, host_hourly, host_peer_daily, threat_lists, ids_events, ip_names, ip_reputation, users, sessions, login_attempts, ip_access, schema_migrations CASCADE"} {
+	for _, stmt := range []string{"DROP TABLE IF EXISTS acct, proto, ip_info, ip_nicknames, alerts, settings, host_hourly, host_peer_daily, threat_lists, ids_events, ip_names, ip_reputation, users, sessions, login_attempts, ip_access, file_intel, program_identity, lolbins, schema_migrations CASCADE"} {
 		if _, err := d.Pool.Exec(ctx, stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -845,15 +846,107 @@ func TestAgents(t *testing.T) {
 	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 || rep.Program.KnownSource != "builtin" {
 		t.Fatalf("explain back to builtin: http %d %+v", code, rep.Program)
 	}
+	// Program identity facts ride along with a batch (once per exe + hash); the server keeps
+	// them per agent and registers the hashes for the files lane.
+	evilHash := strings.Repeat("1", 64)
+	cleanHash := strings.Repeat("2", 64)
+	clearFiles := func() {
+		// One statement per Exec: pgx refuses multi-statement queries with parameters.
+		if _, err := e.db.Pool.Exec(ctx, `DELETE FROM file_intel WHERE sha256 = ANY($1)`, []string{evilHash, cleanHash}); err != nil {
+			t.Fatalf("clear file_intel: %v", err)
+		}
+		if _, err := e.db.Pool.Exec(ctx, `DELETE FROM lolbins WHERE source = 'lolbas'`); err != nil {
+			t.Fatalf("clear lolbins: %v", err)
+		}
+	}
+	clearFiles()
+	t.Cleanup(clearFiles)
+	idBatch := map[string]any{"hostname": "PETRO-PC", "version": "0.3.0", "ips": []string{"192.168.1.10"}, "capture": "poll", "conns": []map[string]any{
+		{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "203.0.113.5", "dst_port": 4444, "exe": `C:\Users\petro\AppData\Local\Temp\update.exe`, "user": "petro", "sha256": evilHash},
+		{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "198.51.100.77", "dst_port": 443, "exe": `C:\Windows\System32\certutil.exe`, "user": "petro"},
+		{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "198.51.100.77", "dst_port": 443, "exe": `C:\Windows\System32\itbin.exe`, "user": "petro"},
+	}, "programs": []map[string]any{
+		{"exe": `C:\Program Files\Chrome\chrome.exe`, "sha256": strings.ToUpper(cleanHash), "sha1": strings.Repeat("a", 40), "md5": strings.Repeat("b", 32), "size": 3200000, "origin": "program-files",
+			"signature": "valid", "signer": "Google LLC", "company": "Google LLC", "product": "Google Chrome", "file_version": "128.0.1"},
+		{"exe": `C:\Users\petro\AppData\Local\Temp\update.exe`, "sha256": evilHash, "md5": "44d88612fea8a8f36de82e1278abb02f", "size": 68, "origin": "tmp", "signature": "unsigned"},
+		{"exe": "bad", "sha256": "nothex"}, // dropped
+	}}
+	var idRes struct {
+		Accepted int `json:"accepted"`
+		Programs int `json:"programs"`
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, idBatch, &idRes); code != 200 || idRes.Accepted != 3 || idRes.Programs != 2 {
+		t.Fatalf("identity batch: http %d %+v", code, idRes)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 {
+		t.Fatalf("explain identity: http %d", code)
+	}
+	if id := rep.Program.Identity; id == nil || id.Signer != "Google LLC" || id.Signature != "valid" || id.SHA256 != cleanHash || id.SHA1 != strings.Repeat("a", 40) || id.Product != "Google Chrome" {
+		t.Fatalf("identity in explain: %+v", rep.Program.Identity)
+	}
+	if !strings.Contains(fmt.Sprint(rep.Signals), "signed by Google LLC") {
+		t.Errorf("identity signal missing: %+v", rep.Signals)
+	}
+	// Files lane: Cymru MHR (stubbed resolver) and VirusTotal file reports through the shared quota.
+	dayBefore, _, _ := e.db.VTUsage(ctx)
+	e.worker.EnableFiles(&scheduler.FilesLane{VT: &enrich.VirusTotal{BaseURL: e.vt.URL, APIKey: "test-key"}, MHR: &enrich.MHR{LookupTXT: func(_ context.Context, name string) ([]string, error) {
+		if strings.HasPrefix(name, "44d88612fea8a8f36de82e1278abb02f.") {
+			return []string{"1788025842 87"}, nil
+		}
+		return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+	}}, BatchSize: 10})
+	e.worker.RunFilesOnce(ctx)
+	e.worker.Files = nil
+	if reqs := e.vt.requested(); !contains(reqs, "file:"+evilHash) || !contains(reqs, "file:"+cleanHash) {
+		t.Fatalf("files lane did not ask VirusTotal for both hashes: %v", reqs)
+	}
+	if dayAfter, _, _ := e.db.VTUsage(ctx); dayAfter < dayBefore+2 {
+		t.Errorf("file lookups must count against the VirusTotal quota: %d -> %d", dayBefore, dayAfter)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Users\petro\AppData\Local\Temp\update.exe`)), &rep); code != 200 {
+		t.Fatalf("explain evil: http %d", code)
+	}
+	f := rep.Program.File
+	if f == nil || f.VT.Status != "ok" || f.VT.Malicious == nil || *f.VT.Malicious != 41 || f.VT.Label != "trojan.agent/redline" || f.MHR.Status != "listed" || f.MHR.Detection == nil || *f.MHR.Detection != 87 {
+		t.Fatalf("file intel: %+v", f)
+	}
+	if rep.Assessment.Level != "suspicious" || !strings.Contains(fmt.Sprint(rep.Signals), "41 of 72 VirusTotal engines") || !strings.Contains(fmt.Sprint(rep.Signals), "Malware Hash Registry") {
+		t.Fatalf("file intel assessment: %+v %+v", rep.Assessment, rep.Signals)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 || rep.Program.File == nil || rep.Program.File.VT.Status != "unknown" || rep.Program.File.MHR.Status != "clean" {
+		t.Fatalf("never-submitted file: http %d %+v", code, rep.Program.File)
+	}
+	// LOLBAS / GTFOBins catalogue: attached to a built-in entry (certutil is in the knowledge base),
+	// and the whole identity when neither the user nor the built-in list knows the name (itbin).
+	if err := e.db.ReplaceLOLBins(ctx, "lolbas", []db.LOLBin{{Name: "Certutil.exe", Display: "Certutil.exe", Description: "Handles certificates.", Functions: []string{"Download", "Encode"}, URL: "https://lolbas-project.github.io/lolbas/Binaries/Certutil/"},
+		{Name: "ItBin.exe", Display: "ItBin.exe", Functions: []string{"Execute"}}}); err != nil {
+		t.Fatalf("replace lolbins: %v", err)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Windows\System32\certutil.exe`)), &rep); code != 200 {
+		t.Fatalf("explain certutil: http %d", code)
+	}
+	if rep.Program.LOLBin == nil || rep.Program.LOLBin.Source != "lolbas" || rep.Program.Known == nil || rep.Program.KnownSource != "builtin" || !strings.Contains(fmt.Sprint(rep.Signals), "listed by LOLBAS as abusable for Download, Encode") {
+		t.Fatalf("lolbin next to builtin entry: %+v %+v %+v", rep.Program.LOLBin, rep.Program.Known, rep.Signals)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Windows\System32\itbin.exe`)), &rep); code != 200 {
+		t.Fatalf("explain itbin: http %d", code)
+	}
+	if rep.Program.LOLBin == nil || rep.Program.Known == nil || rep.Program.Known.Risk != "lolbin" || rep.Program.KnownSource != "lolbas" || rep.Assessment.Level != "review" {
+		t.Fatalf("lolbin knowledge: %+v %+v", rep.Program.LOLBin, rep.Program.Known)
+	}
+	if l, err := e.db.LOLBinFor(ctx, "CERTUTIL.EXE", "linux"); err != nil || l != nil {
+		t.Errorf("lolbas entries must not match linux programs: %+v %v", l, err)
+	}
 	// Per-agent activity for the window.
 	var act db.AgentActivity
 	if code := e.get(t, fmt.Sprintf("/api/v1/agents/%d/activity?since=1h", en.AgentID), &act); code != 200 {
 		t.Fatalf("activity: http %d", code)
 	}
-	if act.Rows != 3 || act.Conns != 9 || act.Programs != 3 || act.Peers != 3 || len(act.ByProgram) != 3 || act.ByProgram[0].Name != "chrome.exe" || len(act.Timeline) != 1 || act.Timeline[0].Conns != 9 || len(act.Recent) != 3 {
+	// 3 rows from the first batch + 3 from the identity batch (update.exe, certutil.exe, itbin.exe).
+	if act.Rows != 6 || act.Conns != 12 || act.Programs != 6 || act.Peers != 5 || len(act.ByProgram) != 6 || act.ByProgram[0].Name != "chrome.exe" || len(act.Timeline) != 1 || act.Timeline[0].Conns != 12 || len(act.Recent) != 6 {
 		t.Fatalf("activity: %+v", act)
 	}
-	if len(act.Destinations) != 3 || act.Destinations[0].Dst != "8.8.8.8" || act.Destinations[0].Conns != 7 || len(act.Destinations[0].Programs) != 1 || act.Destinations[0].Programs[0] != "chrome.exe" {
+	if len(act.Destinations) != 5 || act.Destinations[0].Dst != "8.8.8.8" || act.Destinations[0].Conns != 7 || len(act.Destinations[0].Programs) != 1 || act.Destinations[0].Programs[0] != "chrome.exe" {
 		t.Fatalf("destinations: %+v", act.Destinations)
 	}
 	// A rule finding host→peer gets "via" from the agent data (details + notification text).
@@ -1919,4 +2012,13 @@ func TestSystemStatus(t *testing.T) {
 	if st["rules_enabled"] != true || st["suricata_enabled"] != true {
 		t.Errorf("status flags: %+v", st)
 	}
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

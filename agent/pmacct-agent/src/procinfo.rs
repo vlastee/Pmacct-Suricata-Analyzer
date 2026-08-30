@@ -1,19 +1,21 @@
 //! Resolve a PID to a program identity, cached (PIDs are reused, so entries expire).
-use agent_core::model::ProcInfo;
-use sha2::{Digest, Sha256};
+use crate::identity::{hash_file, FileHashes, Identities};
+use agent_core::model::{ProcInfo, ProgramIdentity};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub struct Resolver {
     cache: HashMap<u32, (ProcInfo, Instant)>,
-    hashes: HashMap<(String, u64, u64), String>, // (path, size, mtime) -> sha256
+    hashes: HashMap<(String, u64, u64), FileHashes>, // (path, size, mtime) -> digests
+    by_exe: HashMap<String, FileHashes>,             // latest digests per executable path
+    ids: Identities,
     ttl: Duration,
 }
 
 impl Default for Resolver {
     fn default() -> Self {
-        Self { cache: HashMap::new(), hashes: HashMap::new(), ttl: Duration::from_secs(300) }
+        Self { cache: HashMap::new(), hashes: HashMap::new(), by_exe: HashMap::new(), ids: Identities::default(), ttl: Duration::from_secs(300) }
     }
 }
 
@@ -33,7 +35,7 @@ impl Resolver {
             info.name = base.to_string();
         }
         if !info.exe.is_empty() {
-            info.sha256 = self.hash(&info.exe);
+            info.sha256 = self.hash(&info.exe, pid);
         }
         self.cache.insert(pid, (info.clone(), Instant::now()));
         if self.cache.len() > 5000 {
@@ -42,22 +44,53 @@ impl Resolver {
         info
     }
 
-    fn hash(&mut self, exe: &str) -> String {
-        let Ok(meta) = std::fs::metadata(exe) else { return String::new() };
-        if meta.len() > 256 << 20 {
+    /// Queues identity facts (package, signature, ...) for the program behind `info` if this
+    /// exe + hash has not been described yet this run. Call after container attribution.
+    pub fn note_identity(&mut self, info: &ProcInfo) {
+        if info.sha256.is_empty() {
+            return;
+        }
+        if let Some(h) = self.by_exe.get(&info.exe) {
+            if h.sha256 == info.sha256 {
+                let h = h.clone();
+                self.ids.note(&info.exe, info.pid, &info.container, &h);
+            }
+        }
+    }
+
+    /// Resolves and returns the identities queued since the last call.
+    pub fn take_identities(&mut self) -> Vec<ProgramIdentity> {
+        self.ids.take()
+    }
+
+    pub fn pending_identities(&self) -> usize {
+        self.ids.pending()
+    }
+
+    fn hash(&mut self, exe: &str, pid: u32) -> String {
+        // A process in another mount namespace (container, flatpak) has a path the host cannot
+        // open; /proc/<pid>/exe reaches the same file through the kernel.
+        let path = PathBuf::from(exe);
+        #[cfg(target_os = "linux")]
+        let path = if path.is_file() { path } else { PathBuf::from(format!("/proc/{pid}/exe")) };
+        #[cfg(not(target_os = "linux"))]
+        let _ = pid;
+        let Ok(meta) = std::fs::metadata(&path) else { return String::new() };
+        if meta.len() > crate::identity::MAX_HASH_BYTES {
             return String::new();
         }
         let mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
         let key = (exe.to_string(), meta.len(), mtime);
         if let Some(h) = self.hashes.get(&key) {
-            return h.clone();
+            return h.sha256.clone();
         }
-        let h = std::fs::read(exe).map(|b| hex::encode(Sha256::digest(&b))).unwrap_or_default();
+        let h = hash_file(&path).unwrap_or_default();
         if self.hashes.len() > 2000 {
             self.hashes.clear();
         }
         self.hashes.insert(key, h.clone());
-        h
+        self.by_exe.insert(exe.to_string(), h.clone());
+        h.sha256
     }
 }
 

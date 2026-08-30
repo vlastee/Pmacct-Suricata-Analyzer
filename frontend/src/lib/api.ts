@@ -52,6 +52,20 @@ export interface KBEntry {
   expected: string; verify: string[]; risk: string; note: string; created_by: string; created_at: string; updated_at: string
 }
 export interface ExplainKnown { title: string; category: string; description: string; expected: string; verify?: string[]; risk?: string }
+export interface ProgramIdentity {
+  exe: string; sha256: string; sha1?: string; md5?: string; size: number; modified?: string
+  origin?: string; package?: string; package_version?: string; verified?: boolean
+  signature?: string; signer?: string; company?: string; product?: string; file_version?: string; description?: string; note?: string
+  first_reported: string; last_reported: string
+}
+export interface FileIntel {
+  sha256: string; sha1?: string; md5?: string; priority: number
+  vt: { status: string; malicious: number | null; suspicious: number | null; harmless: number | null; undetected: number | null; label?: string; names: string[]; signers: string[]; type?: string; first_seen: string | null; last_analysis: string | null; error?: string }
+  vt_lookup_at: string | null; vt_attempts: number
+  mhr: { status: string; detection: number | null; last_seen: string | null; error?: string }
+  mhr_lookup_at: string | null
+}
+export interface LOLBin { source: 'lolbas' | 'gtfobins'; name: string; display: string; description: string; functions: string[]; paths: string[]; mitre: string[]; url: string }
 export interface ExplainDestination {
   dst: string; port: number; proto: string; service?: string; conns: number; bytes: number; first: string; last: string
   hostname?: string; names: string[]; asn?: string; org?: string; country?: string; hosting: boolean; proxy: boolean
@@ -62,7 +76,8 @@ export interface ExplainDestination {
 export interface ExplainReport {
   program: { name: string; exe: string; user: string; container?: string; os?: string; machine?: string; hashes: string[]; hosts: string[]; agents: number; conns: number; destinations: number
     first_seen: string | null; last_seen: string | null; first_in_window: string | null; pids: number[]; cmdline?: string; known: ExplainKnown | null
-    known_source?: 'user' | 'builtin'; known_id?: number }
+    known_source?: 'user' | 'builtin' | 'lolbas' | 'gtfobins'; known_id?: number
+    identity: ProgramIdentity | null; file: FileIntel | null; lolbin: LOLBin | null }
   destinations: ExplainDestination[]
   signals: { level: 'info' | 'warn' | 'critical'; text: string }[]
   assessment: { level: 'expected' | 'review' | 'suspicious'; summary: string }
@@ -133,6 +148,7 @@ export interface EnrichmentStatus {
   enabled: boolean
   table: { total: number; ok: number; pending: number; failed: number; stale: number; vt_done: number; vt_failed: number; vt_never: number; vt_stale: number; vt_used_today: number; vt_used_month: number; vt_flagged: number }
   lanes?: Record<string, LaneStats>
+  files?: { files: number; vt_pending: number; vt_checked: number; vt_unknown: number; vt_flagged: number; mhr_checked: number; mhr_listed: number; identities: number; lolbins: number }
 }
 export interface AuthUser { id: number; username: string; is_admin: boolean; must_change_password: boolean; disabled: boolean; created_at: string; last_login: string | null; last_login_ip: string | null }
 export interface LoginActivity { ip: string | null; username: string | null; success: boolean; reason: string | null; ts: string; user_agent: string | null }

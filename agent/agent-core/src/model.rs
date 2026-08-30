@@ -76,6 +76,55 @@ pub struct EventsBatch {
     pub capture: String,
     pub dropped: u64,
     pub conns: Vec<ConnRecord>,
+    /// Identity facts for executables seen for the first time since the agent started
+    /// (one entry per exe + hash); empty in most batches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<ProgramIdentity>,
+}
+
+/// Facts about an executable gathered on the machine itself: where it came from (package
+/// manager, snap, flatpak, AppImage, a stray file), whether it still matches what the package
+/// installed, and on Windows the Authenticode signature and the version resource. Reported once
+/// per (exe, sha256) per agent run; the server keeps the latest per agent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProgramIdentity {
+    pub exe: String,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha1: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub md5: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<DateTime<Utc>>,
+    /// Install channel: dpkg | apk | pacman | snap | flatpak | appimage | nix | container |
+    /// venv | user-install | home | tmp | opt | local | unpackaged | "" (not determined).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_version: String,
+    /// Some(true) when the file's digest matches the package manifest, Some(false) when it differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    /// Windows Authenticode: valid | unsigned | untrusted | invalid | "" (not checked).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signer: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub company: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub product: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_version: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Free-text detail: catalog file, why a check was skipped, etc.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
 }
 
 /// The server's current agent build for this platform (in the events ack, for self-update).

@@ -690,14 +690,15 @@ LIMIT $4`
 	return out, rows.Err()
 }
 
-// VTUsage counts VirusTotal lookups performed since UTC midnight and since the start of the UTC
-// month (durable across restarts). Note: only the latest lookup per IP is stored, so this is a
-// lower bound; the scheduler also honours provider-side 429s.
+// VTUsage counts VirusTotal lookups (IP and file reports share one API quota) performed since
+// UTC midnight and since the start of the UTC month (durable across restarts). Note: only the
+// latest lookup per record is stored, so this is a lower bound; the scheduler also honours
+// provider-side 429s.
 func (d *DB) VTUsage(ctx context.Context) (day, month int64, err error) {
 	err = d.Pool.QueryRow(ctx, `SELECT
   COUNT(*) FILTER (WHERE vt_lookup_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'),
   COUNT(*) FILTER (WHERE vt_lookup_at >= date_trunc('month', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc')
-FROM ip_info`).Scan(&day, &month)
+FROM (SELECT vt_lookup_at FROM ip_info UNION ALL SELECT vt_lookup_at FROM file_intel) x`).Scan(&day, &month)
 	return
 }
 

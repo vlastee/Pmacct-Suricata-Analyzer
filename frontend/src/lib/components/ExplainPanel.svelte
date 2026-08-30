@@ -9,7 +9,18 @@
   // External look-ups (opened in a new tab; nothing is sent until clicked).
   const base = $derived(p.exe ? (p.exe.split(/[\\/]/).pop() || p.name) : (p.name === '(unknown process)' ? '' : p.name))
   const q = $derived(encodeURIComponent(base + (p.os === 'windows' ? ' process' : ' linux process')))
+  const id = $derived(report.program.identity)
+  const file = $derived(report.program.file)
+  const lol = $derived(report.program.lolbin)
+  const vtTotal = $derived(file?.vt ? (file.vt.malicious ?? 0) + (file.vt.suspicious ?? 0) + (file.vt.harmless ?? 0) + (file.vt.undetected ?? 0) : 0)
+  const originLabel: Record<string, string> = {
+    dpkg: 'Debian/Ubuntu package', apk: 'Alpine package', pacman: 'Arch package', snap: 'Snap', flatpak: 'Flatpak', appimage: 'AppImage', nix: 'Nix store',
+    container: 'container image', venv: 'language environment (venv / node_modules / …)', 'user-install': 'user-level install', home: 'home directory', download: 'Downloads folder',
+    tmp: 'temporary location', opt: '/opt (manual install)', local: '/usr/local (manual install)', unpackaged: 'no package owns it',
+    windows: 'Windows system directory', 'program-files': 'Program Files', store: 'Microsoft Store (MSIX)', programdata: 'ProgramData',
+  }
   let links = $derived([
+    ...(lol ? [{ label: lol.source === 'lolbas' ? 'LOLBAS entry' : 'GTFOBins entry', href: lol.url }] : []),
     { label: 'Google', href: `https://www.google.com/search?q=${q}` },
     { label: 'DuckDuckGo', href: `https://duckduckgo.com/?q=${q}` },
     { label: 'VirusTotal', href: p.hashes.length ? `https://www.virustotal.com/gui/file/${p.hashes[0]}` : `https://www.virustotal.com/gui/search/${encodeURIComponent(base)}` },
@@ -62,7 +73,8 @@
   <div class="grid cols-2" style="margin-top:.6rem">
     <div>
       <h4>What it is
-        {#if p.known_source === 'user'}<span class="badge good" title="from your knowledge base">yours</span>{/if}
+        {#if p.known_source === 'user'}<span class="badge good" title="from your knowledge base">yours</span>
+        {:else if p.known_source === 'lolbas' || p.known_source === 'gtfobins'}<span class="badge warning" title="from the {p.known_source === 'lolbas' ? 'LOLBAS' : 'GTFOBins'} catalogue">{p.known_source === 'lolbas' ? 'LOLBAS' : 'GTFOBins'}</span>{/if}
         {#if base}<button class="small" onclick={startEdit}>{p.known_source === 'user' ? 'Edit entry' : p.known ? 'Override in knowledge base' : 'Add to knowledge base'}</button>{/if}
         {#if p.known_source === 'user'}<button class="small" onclick={deleteKB}>Remove</button>{/if}
       </h4>
@@ -105,7 +117,56 @@
         <dt>Executable</dt><dd class="mono" style="word-break:break-all">{p.exe || '–'}</dd>
         <dt>User</dt><dd>{p.user || '–'}{#if p.os} · {p.os}{/if}</dd>
         {#if p.cmdline}<dt>Command line</dt><dd class="mono" style="word-break:break-all">{p.cmdline}</dd>{/if}
-        <dt>SHA-256</dt><dd class="mono" style="word-break:break-all">{p.hashes.length ? p.hashes.join(', ') : 'not available'}</dd>
+        <dt>SHA-256</dt><dd class="mono" style="word-break:break-all">{p.hashes.length ? p.hashes.join(', ') : id?.sha256 ?? 'not available'}</dd>
+        {#if id}
+          <dt>Origin</dt>
+          <dd>
+            {originLabel[id.origin ?? ''] ?? id.origin ?? 'not determined'}{#if id.package} · <b>{id.package}</b>{#if id.package_version} {id.package_version}{/if}{/if}
+            {#if id.verified === true}<span class="badge good" title="the file's digest matches the package manifest">matches manifest</span>
+            {:else if id.verified === false}<span class="badge critical" title="the file's digest differs from the package manifest">MODIFIED</span>{/if}
+            {#if id.note}<span class="muted"> · {id.note}</span>{/if}
+          </dd>
+          {#if id.signature}
+            <dt>Signature</dt>
+            <dd>
+              <span class="badge {id.signature === 'valid' ? 'good' : id.signature === 'invalid' ? 'critical' : 'warning'}">{id.signature}</span>
+              {#if id.signer} {id.signer}{/if}
+            </dd>
+          {/if}
+          {#if id.company || id.product || id.file_version || id.description}
+            <dt>Version info</dt><dd>{[id.company, id.product, id.file_version].filter(Boolean).join(' · ')}{#if id.description} <span class="muted">— {id.description}</span>{/if}</dd>
+          {/if}
+          <dt>File</dt><dd class="muted">{fmtBytes(id.size)}{#if id.modified} · written {fmtTime(id.modified)}{/if} · reported {fmtAgo(id.last_reported)}</dd>
+        {:else if p.os}
+          <dt>Origin</dt><dd class="muted">not reported — agent 0.3+ adds the owning package / signer for every program</dd>
+        {/if}
+        {#if file}
+          <dt>VirusTotal file</dt>
+          <dd>
+            {#if file.vt.status === 'ok'}
+              <span class="badge {(file.vt.malicious ?? 0) >= 3 ? 'critical' : (file.vt.malicious ?? 0) > 0 ? 'warning' : 'good'}">{file.vt.malicious ?? 0} / {vtTotal} engines</span>
+              {#if file.vt.label} <b>{file.vt.label}</b>{/if}
+              {#if file.vt.names.length} <span class="muted">known as {file.vt.names.slice(0, 3).join(', ')}</span>{/if}
+              {#if file.vt.signers.length} <span class="muted">· signed by {file.vt.signers[0]}</span>{/if}
+              {#if file.vt.first_seen} <span class="muted">· first submitted {fmtTime(file.vt.first_seen)}</span>{/if}
+            {:else if file.vt.status === 'unknown'}<span class="badge warning">never submitted</span> <span class="muted">no other party has seen this exact file</span>
+            {:else if file.vt.status === 'failed'}<span class="badge">look-up failed</span> <span class="muted">{file.vt.error ?? ''}</span>
+            {:else}<span class="muted">pending — looked up in the next enrichment pass{p.hashes.length || id ? '' : ' (needs a hash)'}</span>{/if}
+            {#if file.sha256}<a href={`https://www.virustotal.com/gui/file/${file.sha256}`} target="_blank" rel="noopener" style="margin-left:.4rem">open ↗</a>{/if}
+          </dd>
+          <dt>Cymru MHR</dt>
+          <dd>
+            {#if file.mhr.status === 'listed'}<span class="badge critical">known malware</span> <span class="muted">{file.mhr.detection ?? '?'}% of AV engines detect it{#if file.mhr.last_seen} · last seen {fmtTime(file.mhr.last_seen)}{/if}</span>
+            {:else if file.mhr.status === 'clean'}<span class="badge good">not listed</span>
+            {:else if file.mhr.status === 'failed'}<span class="badge">look-up failed</span>
+            {:else if file.mhr.status === 'skipped'}<span class="muted">needs an MD5/SHA-1 (agent 0.3+)</span>
+            {:else}<span class="muted">pending</span>{/if}
+          </dd>
+        {/if}
+        {#if lol}
+          <dt>{lol.source === 'lolbas' ? 'LOLBAS' : 'GTFOBins'}</dt>
+          <dd><span class="badge warning">listed</span> abusable for {lol.functions.join(', ')}{#if lol.mitre.length} <span class="muted mono">· {lol.mitre.join(' ')}</span>{/if} <a href={lol.url} target="_blank" rel="noopener">entry ↗</a></dd>
+        {/if}
         <dt>Seen</dt><dd>first {p.first_seen ? fmtTime(p.first_seen) : '–'} · last {p.last_seen ? fmtAgo(p.last_seen) : '–'} · {fmtCompact(p.conns)} connections to {p.destinations} destinations in this window</dd>
         <dt>Addresses</dt><dd class="mono">{p.hosts.join(', ') || '–'}{#if p.pids.length} · pids {p.pids.join(', ')}{/if}</dd>
       </dl>

@@ -133,6 +133,10 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 | `GATEWAYS` | – | router IP(s), exempt from DNS/beaconing rules (e.g. `10.0.0.1`) |
 | `THREAT_FEEDS` | abuse.ch, Spamhaus, Tor, CINS, … | `name=url,…` bulk IP/CIDR feeds (empty disables) |
 | `THREAT_FEEDS_INTERVAL` | `1h` | how often feeds are refreshed |
+| `LOLBAS_URL` / `GTFOBINS_URL` | project exports | LOLBAS (Windows) / GTFOBins (Unix) catalogues of abusable system binaries, refreshed daily and used by *Explain*; empty disables |
+| `FILE_INTEL` | `true` | look up hashes of executables reported by agents: Team Cymru MHR and VirusTotal file reports |
+| `FILE_VT_REFRESH_AFTER` | `720h` | re-check a file's VirusTotal report after this |
+| `MHR_ENABLED` | `true` | Team Cymru Malware Hash Registry (DNS, no key) |
 | `SURICATA_LISTEN` | – | syslog listen address for Suricata EVE (e.g. `:5514`); empty disables |
 | `NOTIFY_MIN_SEVERITY` | `critical` | minimum severity delivered to notification channels (startup default; changeable on the Enrichment page) |
 | `NOTIFY_DIGEST` / `NOTIFY_QUIET_HOURS` / `NOTIFY_RENOTIFY_AFTER` | `0` / – / `24h` | batch window / silent hours (`23-7`) / re-notify interval |
@@ -158,6 +162,13 @@ Two independent lanes run inside the API process and share the `ip_info` table:
 * **VirusTotal lane**: malicious/suspicious/harmless/undetected engine counts, reputation, tags, network.
 * **AbuseIPDB** and **GreyNoise** lanes (optional, same quota-aware scheduler) add a confidence
   score / scanner classification per IP.
+* **files lane**: for every executable an endpoint agent (≥ 0.3) reports, the **hash** — never
+  the file — is checked against the [Team Cymru Malware Hash Registry](https://www.team-cymru.com/mhr)
+  (a DNS TXT query, free, keyless) and, when `VT_API_KEY` is set, fetched as a **VirusTotal file
+  report** (engine counts, threat label, names it is known under, signers, first submission)
+  through the same daily/monthly quota as the IP lane — unsigned and unpackaged files first,
+  hashes VirusTotal has never seen recorded as such (a useful fact in itself). Results show in
+  the program's *Explain* panel and on the Enrichment page.
 
 If `GEOIP_CITY_DB` and `GEOIP_ASN_DB` point at MaxMind `.mmdb` files (pfBlockerNG already downloads
 these on pfSense), the geo lane uses them instead of ip-api.com — no network, no quota.
@@ -306,6 +317,26 @@ builds Linux and Windows).
    unreachable) defaults to `/var/lib/pmacct-agent/spool` / `%ProgramData%\pmacct-agent\spool`
    and can be placed on any disk via the builder's *spool dir* field (`--spool-dir`).
 
+**What the agent knows about each program** (agent ≥ 0.3): the first time an executable is
+seen, the agent reports its identity facts once — SHA-256/SHA-1/MD5, size and mtime, and
+* on Linux, the **owning package** from the dpkg / apk / pacman database (plain file reads —
+  nothing is executed), its version, and whether the file **still matches the package manifest**
+  (dpkg `.md5sums`, apk sha1, pacman mtree); otherwise the install channel: snap, flatpak (with
+  the app id, also for sandboxed processes), AppImage, Nix, container image, venv/node_modules,
+  `/opt`, `/usr/local`, home, Downloads, `/tmp`, or *unpackaged* (a file under `/usr` that no
+  package owns). rpm-based systems are recognised but their database is not parsed yet;
+* on Windows, the **Authenticode** verdict via `WinVerifyTrust` (embedded signature or the
+  Windows security catalogs that sign OS files: *valid / unsigned / untrusted / invalid*), the
+  signer's certificate subject, and the version resource (company, product, file version,
+  description), plus the location class (Windows dir, Program Files, Store app, AppData, Temp,
+  Downloads…).
+
+`pmacct-agent identify <path>…` prints exactly what would be reported for a file — handy to
+check a machine by hand. Explain shows all of it under *Origin / Signature / Version info*, turns
+it into signals (manifest mismatch or invalid signature → critical; unsigned, unpackaged or
+temp-location → warning) and adds the matching verification commands (`dpkg -V`, `pacman -Qkk`,
+`Get-AuthenticodeSignature`, …).
+
 **Explain** (button next to every program on host pages and in an agent's activity) turns the
 data into a write-up without any external service: what the program is (built-in knowledge base:
 browsers, `pasta`/`passt`/`slirp4netns` container proxies, runtimes, package managers, Windows
@@ -321,6 +352,14 @@ built-in list; manage/import/export them on the Rules page (`GET/POST /api/v1/kb
 `POST /api/v1/kb/import`, `DELETE /api/v1/kb/{id}`, `GET /api/v1/kb?export=1`). The panel also
 offers look-up links (Google, DuckDuckGo, VirusTotal by hash, GitHub code search, file.net for
 Windows names) — nothing is sent until you click.
+Two keyed sources complete the picture without any searching: the **files lane** (see
+*Enrichment strategy*: Team Cymru MHR and VirusTotal file reports by hash) and the
+**LOLBAS / GTFOBins catalogues** (`LOLBAS_URL`, `GTFOBINS_URL`; refreshed daily with the threat
+feeds into the `lolbins` table). A program the knowledge base does not know but the catalogue
+lists (`certutil.exe`, `mshta.exe`, `curl`, `busybox`…) is explained from the catalogue entry —
+what it can be abused for, MITRE technique ids, a link to the entry — and always raises a
+warning to check the command line and parent process. Precedence: your entries → built-in
+list → catalogue.
 
 The analyzer image builds the agent for both targets in its `agent` stage (Rust; Linux as a fully
 static musl binary, Windows via mingw cross-compile — a few extra minutes on first build; `--build-arg WITH_AGENT=0` skips it, in which

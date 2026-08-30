@@ -102,18 +102,31 @@ func main() {
 			worker.AddRepLane(&scheduler.RepLane{Provider: &enrich.GreyNoise{BaseURL: cfg.GreyNoiseBaseURL, APIKey: cfg.GreyNoiseKey, Client: httpc},
 				RateLimit: cfg.GreyNoiseRateLimit, DailyQuota: cfg.GreyNoiseDailyQuota, RefreshAfter: cfg.GreyNoiseRefresh})
 		}
+		if cfg.FileIntelEnabled {
+			fl := &scheduler.FilesLane{VT: vt, RefreshAfter: cfg.FileVTRefreshAfter, BatchSize: cfg.VTBatchSize}
+			if cfg.MHREnabled {
+				fl.MHR = &enrich.MHR{}
+			}
+			if fl.VT != nil || fl.MHR != nil {
+				worker.EnableFiles(fl)
+			}
+		}
 		srv.Worker = worker
 		go worker.Run(ctx)
 		slog.Info("enrichment worker started", "geo_provider", provider.Name(), "virustotal", vt != nil, "reputation_lanes", len(worker.Rep),
 			"interval", cfg.EnrichInterval, "vt_daily_quota", cfg.VTDailyQuota)
 	}
 
-	// Threat feeds.
-	if len(cfg.ThreatFeeds) > 0 {
-		f := &feeds.Fetcher{DB: database, Feeds: cfg.ThreatFeeds, Client: &http.Client{Timeout: 90 * time.Second}, Interval: cfg.ThreatFeedsInterval}
+	// Threat feeds and the LOLBAS / GTFOBins catalogues.
+	if len(cfg.ThreatFeeds) > 0 || cfg.LOLBASURL != "" || cfg.GTFOBinsURL != "" {
+		fc := &http.Client{Timeout: 90 * time.Second}
+		f := &feeds.Fetcher{DB: database, Feeds: cfg.ThreatFeeds, Client: fc, Interval: cfg.ThreatFeedsInterval}
+		if cfg.LOLBASURL != "" || cfg.GTFOBinsURL != "" {
+			f.LOLBins = &feeds.LOLBins{DB: database, Client: fc, LOLBASURL: cfg.LOLBASURL, GTFOBinsURL: cfg.GTFOBinsURL}
+		}
 		srv.Feeds = f
 		go f.Run(ctx)
-		slog.Info("threat feeds enabled", "feeds", len(cfg.ThreatFeeds), "interval", cfg.ThreatFeedsInterval)
+		slog.Info("threat feeds enabled", "feeds", len(cfg.ThreatFeeds), "interval", cfg.ThreatFeedsInterval, "lolbins", f.LOLBins != nil)
 	}
 
 	// Rules engine.

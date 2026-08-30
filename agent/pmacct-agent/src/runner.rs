@@ -66,6 +66,7 @@ pub fn identify(resolver: &mut Resolver, containers: &mut ContainerMap, s: &Sock
     {
         let _ = containers;
     }
+    resolver.note_identity(&info);
     info
 }
 
@@ -103,8 +104,12 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
                 let now = chrono::Utc::now();
                 let conns = agg.drain(now, false);
                 let heartbeat_due = last_upload.elapsed() >= Duration::from_secs(60);
-                if !conns.is_empty() || heartbeat_due {
-                    let batch = EventsBatch { hostname: host_name(), version: agent_core::VERSION.into(), ips: local_ips(), capture: capture_name.clone(), dropped: agg.dropped, conns };
+                if !conns.is_empty() || heartbeat_due || resolver.pending_identities() > 0 {
+                    // Identity facts ride along with the first upload after a program is seen
+                    // (package databases are read once for the whole set).
+                    let programs = resolver.take_identities();
+                    if !programs.is_empty() { info!("describing {} new program(s)", programs.len()); }
+                    let batch = EventsBatch { hostname: host_name(), version: agent_core::VERSION.into(), ips: local_ips(), capture: capture_name.clone(), dropped: agg.dropped, conns, programs };
                     match client.send(&batch).await {
                         Ok(ack) => {
                             last_upload = std::time::Instant::now();
@@ -129,7 +134,7 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
                         }
                         Err(e) => {
                             warn!("upload failed: {e:#}");
-                            if !batch.conns.is_empty() {
+                            if !batch.conns.is_empty() || !batch.programs.is_empty() {
                                 if let Err(e) = spool.push(&batch) { warn!("spool: {e}"); }
                             }
                         }
@@ -140,7 +145,7 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
                 if *stop.borrow() {
                     let conns = agg.drain(chrono::Utc::now(), true);
                     if !conns.is_empty() {
-                        let batch = EventsBatch { hostname: host_name(), version: agent_core::VERSION.into(), ips: local_ips(), capture: capture_name.clone(), dropped: agg.dropped, conns };
+                        let batch = EventsBatch { hostname: host_name(), version: agent_core::VERSION.into(), ips: local_ips(), capture: capture_name.clone(), dropped: agg.dropped, conns, programs: resolver.take_identities() };
                         if client.send(&batch).await.is_err() { let _ = spool.push(&batch); }
                     }
                     info!("stopped");

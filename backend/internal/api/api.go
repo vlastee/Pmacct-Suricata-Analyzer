@@ -818,6 +818,9 @@ func (s *Server) enrichmentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := map[string]any{"enabled": s.Cfg.EnrichEnabled, "table": st}
+	if fs, err := s.DB.FileIntelSummary(r.Context()); err == nil {
+		out["files"] = fs
+	}
 	if s.Worker != nil {
 		out["lanes"] = s.Worker.Stats(r.Context())
 	}

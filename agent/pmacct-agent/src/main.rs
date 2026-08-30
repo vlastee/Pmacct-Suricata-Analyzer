@@ -1,6 +1,7 @@
 mod capture;
 #[cfg(target_os = "linux")]
 mod containers;
+mod identity;
 mod procinfo;
 mod update;
 mod runner;
@@ -77,6 +78,13 @@ enum Cmd {
         #[arg(long, default_value_t = 5)]
         seconds: u64,
     },
+    /// Describe executables the way the agent reports them: hashes, owning package / install
+    /// channel, manifest check, and on Windows the Authenticode signer and version resource
+    Identify {
+        /// Executable paths
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -104,6 +112,7 @@ fn main() -> Result<()> {
         Cmd::Uninstall => service::uninstall(),
         Cmd::Status => rt().block_on(status()),
         Cmd::Snapshot { capture, seconds } => snapshot(&capture, seconds),
+        Cmd::Identify { paths } => identify(&paths),
         Cmd::Update { force } => {
             let cfg = Config::load(&Config::default_path())?;
             #[cfg(target_os = "linux")]
@@ -111,6 +120,24 @@ fn main() -> Result<()> {
             rt().block_on(update::manual(&cfg, force))
         }
     }
+}
+
+fn identify(paths: &[String]) -> Result<()> {
+    let mut pending = Vec::new();
+    for p in paths {
+        // The kernel reports the resolved path (/proc/<pid>/exe); do the same for symlinks such as /usr/bin/ls.
+        let exe = std::fs::canonicalize(p).map(|c| c.to_string_lossy().to_string()).unwrap_or_else(|_| p.clone());
+        match identity::hash_file(std::path::Path::new(&exe)) {
+            Some(hashes) => pending.push(identity::Pending { exe, pid: 0, container: String::new(), hashes }),
+            None => eprintln!("{p}: cannot read (missing, not a regular file, or larger than {} MiB)", identity::MAX_HASH_BYTES >> 20),
+        }
+    }
+    let ids = identity::describe_many(pending);
+    println!("{}", serde_json::to_string_pretty(&ids)?);
+    if ids.len() != paths.len() {
+        bail!("{} of {} paths could not be described", paths.len() - ids.len(), paths.len());
+    }
+    Ok(())
 }
 
 fn snapshot(mode: &str, seconds: u64) -> Result<()> {
@@ -213,7 +240,7 @@ async fn status() -> Result<()> {
     println!("pinned CA   {}", cfg.ca_pem.as_deref().map(|p| pin::fingerprint_sha256(p).unwrap_or_default()).unwrap_or_else(|| "none (http)".into()));
     println!("local ips   {:?}", runner::local_ips());
     let c = client::Client::new(&cfg.server, &cfg.token, cfg.ca_pem.as_deref())?;
-    let batch = agent_core::model::EventsBatch { hostname: runner::host_name(), version: agent_core::VERSION.into(), ips: runner::local_ips(), capture: String::new(), dropped: 0, conns: vec![] };
+    let batch = agent_core::model::EventsBatch { hostname: runner::host_name(), version: agent_core::VERSION.into(), ips: runner::local_ips(), capture: String::new(), dropped: 0, conns: vec![], programs: vec![] };
     match c.send(&batch).await {
         Ok(_) => println!("heartbeat   ok"),
         Err(e) => println!("heartbeat   FAILED: {e:#}"),

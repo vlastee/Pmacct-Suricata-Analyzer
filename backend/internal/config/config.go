@@ -69,6 +69,14 @@ type Config struct {
 	// Threat feeds: "name=url,name=url". Empty string disables.
 	ThreatFeeds         map[string]string
 	ThreatFeedsInterval time.Duration
+	// Catalogues of abusable system binaries (empty URL disables), refreshed daily.
+	LOLBASURL   string
+	GTFOBinsURL string
+	// File intelligence for executables reported by agents: VirusTotal file reports (needs
+	// VTAPIKey; shares its quota) and the Team Cymru Malware Hash Registry (DNS, keyless).
+	FileIntelEnabled   bool
+	FileVTRefreshAfter time.Duration
+	MHREnabled         bool
 
 	// Rules engine.
 	RulesEnabled  bool
@@ -114,6 +122,12 @@ type Config struct {
 	// IP access.
 	IPAllowlistOnly bool
 }
+
+// Catalogue exports of the LOLBAS and GTFOBins projects.
+const (
+	DefaultLOLBASURL   = "https://lolbas-project.github.io/api/lolbas.json"
+	DefaultGTFOBinsURL = "https://gtfobins.org/api.json"
+)
 
 func env(key, def string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
@@ -308,6 +322,13 @@ func Load() (*Config, error) {
 	if c.ThreatFeedsInterval, err = envDuration("THREAT_FEEDS_INTERVAL", time.Hour); err != nil {
 		return nil, err
 	}
+	c.LOLBASURL = env("LOLBAS_URL", DefaultLOLBASURL)
+	c.GTFOBinsURL = env("GTFOBINS_URL", DefaultGTFOBinsURL)
+	c.FileIntelEnabled = envBool("FILE_INTEL", true)
+	if c.FileVTRefreshAfter, err = envDuration("FILE_VT_REFRESH_AFTER", 30*24*time.Hour); err != nil {
+		return nil, err
+	}
+	c.MHREnabled = envBool("MHR_ENABLED", true)
 	c.RulesEnabled = envBool("RULES_ENABLED", true)
 	if c.RulesInterval, err = envDuration("RULES_INTERVAL", time.Minute); err != nil {
 		return nil, err

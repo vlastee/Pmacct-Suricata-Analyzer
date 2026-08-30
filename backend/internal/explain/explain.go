@@ -41,8 +41,14 @@ type Program struct {
 	Pids          []int      `json:"pids"`
 	Cmdline       string     `json:"cmdline,omitempty"`
 	Known         *Known     `json:"known"`
-	KnownSource   string     `json:"known_source,omitempty"` // "user" | "builtin"
+	KnownSource   string     `json:"known_source,omitempty"` // "user" | "builtin" | "lolbas" | "gtfobins"
 	KnownID       int64      `json:"known_id,omitempty"`     // user entry id (for editing)
+	// Facts from the machine itself (agent ≥ 0.3): package / signer / manifest check.
+	Identity *db.ProgramIdentity `json:"identity"`
+	// Keyed look-ups by hash: VirusTotal file report, Team Cymru MHR.
+	File *db.FileIntel `json:"file"`
+	// Catalogue entry when the name is a known living-off-the-land binary.
+	LOLBin *db.LOLBin `json:"lolbin"`
 }
 
 // Destination is one peer with everything we know about it.
@@ -166,6 +172,35 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Report, error) {
 	}
 	if agent != nil {
 		rep.Program.OS, rep.Program.Machine = agent.OS, agent.Name
+		if req.Exe != "" {
+			if id, err := b.DB.IdentityFor(ctx, agent.ID, req.Exe); err == nil && id != nil {
+				rep.Program.Identity = id
+			}
+		}
+	}
+	// Hash intelligence: the identity's hash first (the file as it is now), then whatever the
+	// window saw.
+	var hashes []string
+	if rep.Program.Identity != nil {
+		hashes = append(hashes, rep.Program.Identity.SHA256)
+	}
+	hashes = append(hashes, sum.Hashes...)
+	for _, h := range hashes {
+		if h == "" {
+			continue
+		}
+		if fi, err := b.DB.FileIntelFor(ctx, h); err == nil && fi != nil {
+			rep.Program.File = fi
+			break
+		}
+	}
+	if name != "(unknown process)" {
+		if l, err := b.DB.LOLBinFor(ctx, name, rep.Program.OS); err == nil && l != nil {
+			rep.Program.LOLBin = l
+			if rep.Program.Known == nil {
+				rep.Program.Known, rep.Program.KnownSource = KnownFromLOLBin(l), l.Source
+			}
+		}
 	}
 	dests, err := b.DB.ProgramDestinationsFor(ctx, key, req.Window, 25)
 	if err != nil {
@@ -296,13 +331,21 @@ func Assess(rep *Report, now time.Time) {
 	case k.Risk == "no-network":
 		add("critical", "%s is a core system process that should never open outbound connections; this points to code injection or a spoofed process name.", p.Name)
 	case k.Risk == "lolbin":
-		add("warn", "%s is a scriptable system utility that malware commonly abuses; check the command line and the parent process.", p.Name)
+		if p.LOLBin != nil {
+			add("warn", "%s is a system utility listed by %s as abusable for %s; check the command line and the parent process.", p.Name, catalogueName(p.LOLBin.Source), strings.Join(p.LOLBin.Functions, ", "))
+		} else {
+			add("warn", "%s is a scriptable system utility that malware commonly abuses; check the command line and the parent process.", p.Name)
+		}
 	case k.Risk == "interpreter":
 		add("info", "%s is an interpreter — the real identity is the script; enable command-line reporting to see it.", p.Name)
+	}
+	if l := p.LOLBin; l != nil && (k == nil || k.Risk != "lolbin") {
+		add("warn", "%s is listed by %s as abusable for %s — check the command line and the parent process.", p.Name, catalogueName(l.Source), strings.Join(l.Functions, ", "))
 	}
 	if suspiciousPath(p.Exe) {
 		add("warn", "Executable lives in a temporary/download location (%s) — legitimate software rarely runs from there.", p.Exe)
 	}
+	identitySignals(p, k, add)
 	if p.Exe == "" && !unknownOwner {
 		add("info", "The agent could not read the executable path (process exited quickly, or a kernel thread).")
 	}
@@ -379,6 +422,127 @@ func Assess(rep *Report, now time.Time) {
 	rep.Assessment = Assessment{Level: level, Summary: summary}
 }
 
+func catalogueName(source string) string {
+	switch source {
+	case "lolbas":
+		return "LOLBAS"
+	case "gtfobins":
+		return "GTFOBins"
+	}
+	return source
+}
+
+// KnownFromLOLBin turns a catalogue entry into a knowledge-base entry (used when neither the
+// user nor the built-in list knows the program).
+func KnownFromLOLBin(l *db.LOLBin) *Known {
+	desc := l.Description
+	if len(l.Functions) > 0 {
+		desc += " Abusable for: " + strings.Join(l.Functions, ", ") + "."
+	}
+	return &Known{Title: "System utility listed by " + catalogueName(l.Source) + " (" + l.Display + ")", Category: "lolbin", Description: strings.TrimSpace(desc),
+		Expected: "Normally nothing, or only what an administrator drives it to do; outbound connections from it deserve a look.", Risk: "lolbin"}
+}
+
+// identitySignals turns the agent's facts about the file and the hash look-ups into signals.
+func identitySignals(p *Program, k *Known, add func(level, format string, a ...any)) {
+	if id := p.Identity; id != nil {
+		ver := id.PackageVersion
+		if ver != "" {
+			ver = " " + ver
+		}
+		switch {
+		case id.Verified != nil && !*id.Verified:
+			add("critical", "The file differs from what package %s%s installed (%s manifest mismatch) — a modified or replaced binary.", id.Package, ver, id.Origin)
+		case id.Verified != nil && *id.Verified:
+			add("info", "Installed by %s package %s%s; the file matches the package manifest.", id.Origin, id.Package, ver)
+		case id.Package != "" && id.Origin != "container":
+			add("info", "Installed by %s package %s%s.", id.Origin, id.Package, ver)
+		}
+		switch id.Origin {
+		case "unpackaged":
+			add("warn", "No package owns this file (%s) — it was placed there by hand, an installer script, or something else.", p.Exe)
+		case "tmp", "download":
+			if !suspiciousPath(p.Exe) {
+				add("warn", "Runs from a temporary/download location (%s) — legitimate software rarely runs from there.", p.Exe)
+			}
+		case "home":
+			add("info", "Lives in a user's home directory — a personal build or manual download, not managed by the system.")
+		case "container":
+			add("info", "Runs inside container %s; identify it by the image, not by the host's packages.", id.Package)
+		}
+		switch id.Signature {
+		case "valid":
+			by := id.Signer
+			if by == "" {
+				by = "an unnamed certificate"
+			}
+			how := ""
+			if strings.HasPrefix(id.Note, "catalog") {
+				how = " (Windows security catalog)"
+			}
+			add("info", "Authenticode signature valid — signed by %s%s.", by, how)
+		case "unsigned":
+			hint := ""
+			if id.Company != "" {
+				hint = " even though the version resource names " + id.Company
+			}
+			add("warn", "Not digitally signed%s — established vendors sign their releases, so an unsigned binary needs another reason to be trusted.", hint)
+		case "untrusted":
+			by := id.Signer
+			if by == "" {
+				by = "unknown signer"
+			}
+			add("warn", "Signed by %s, but the certificate chain is not trusted on this machine (%s) — a self-signed, expired or unknown-root certificate.", by, id.Note)
+		case "invalid":
+			add("critical", "The digital signature is INVALID — the file was modified after signing, or its certificate was revoked.")
+		}
+	}
+	if f := p.File; f != nil {
+		switch f.VT.Status {
+		case "ok":
+			m, total := 0, 0
+			if f.VT.Malicious != nil {
+				m = *f.VT.Malicious
+			}
+			for _, c := range []*int{f.VT.Malicious, f.VT.Suspicious, f.VT.Harmless, f.VT.Undetected} {
+				if c != nil {
+					total += *c
+				}
+			}
+			label := ""
+			if f.VT.Label != "" {
+				label = " (" + f.VT.Label + ")"
+			}
+			switch {
+			case m >= 3:
+				add("critical", "%d of %d VirusTotal engines flag this file as malicious%s.", m, total, label)
+			case m >= 1:
+				add("warn", "%d of %d VirusTotal engines flag this file%s — likely a false positive, but check the vendor names.", m, total, label)
+			default:
+				first := ""
+				if f.VT.FirstSeen != nil {
+					first = ", first submitted " + f.VT.FirstSeen.Format("Jan 2006")
+				}
+				add("info", "VirusTotal: 0 of %d engines flag this file%s.", total, first)
+			}
+		case "unknown":
+			level := "info"
+			if id := p.Identity; id != nil && (id.Signature == "unsigned" || id.Signature == "untrusted" || id.Origin == "unpackaged" || id.Origin == "tmp" || id.Origin == "download") {
+				level = "warn"
+			}
+			add(level, "This exact file has never been submitted to VirusTotal — no other party has seen it.")
+		}
+		if f.MHR.Status == "listed" {
+			pct := ""
+			if f.MHR.Detection != nil {
+				pct = fmt.Sprintf("; %d%% of AV engines detect it", *f.MHR.Detection)
+			}
+			add("critical", "Team Cymru's Malware Hash Registry lists this file as known malware%s.", pct)
+		}
+	}
+	_ = k
+}
+
 func rank(level string) int {
 	switch level {
 	case "critical":
@@ -404,7 +568,8 @@ func verifyCommands(rep *Report) []string {
 	if strings.EqualFold(p.OS, "windows") {
 		out = append(out, fmt.Sprintf("Get-Process -Id %s | Select-Object Path, StartTime, Company", pid))
 		if p.Exe != "" {
-			out = append(out, fmt.Sprintf("Get-AuthenticodeSignature '%s' | Select-Object Status, SignerCertificate", p.Exe), fmt.Sprintf("Get-FileHash '%s'   # compare with the reported sha256", p.Exe))
+			out = append(out, fmt.Sprintf("Get-AuthenticodeSignature '%s' | Select-Object Status, SignerCertificate", p.Exe), fmt.Sprintf("Get-FileHash '%s'   # compare with the reported sha256", p.Exe),
+				fmt.Sprintf("(Get-Item '%s').VersionInfo | Format-List CompanyName, ProductName, FileVersion", p.Exe))
 		}
 		out = append(out, fmt.Sprintf("netstat -bano | findstr %s", pid))
 		if dst != "" {
@@ -414,6 +579,24 @@ func verifyCommands(rep *Report) []string {
 		out = append(out, fmt.Sprintf("ps -o pid,user,etime,cmd -p %s", pid), fmt.Sprintf("readlink /proc/%s/exe", pid))
 		if p.Exe != "" {
 			out = append(out, fmt.Sprintf("sha256sum '%s'   # compare with the reported sha256", p.Exe))
+			origin := ""
+			if p.Identity != nil {
+				origin = p.Identity.Origin
+			}
+			switch origin {
+			case "dpkg":
+				out = append(out, fmt.Sprintf("dpkg -S '%s' && dpkg -V %s   # owner, then verify the package's files", p.Exe, p.Identity.Package))
+			case "apk":
+				out = append(out, fmt.Sprintf("apk info -W '%s' && apk audit %s", p.Exe, p.Identity.Package))
+			case "pacman":
+				out = append(out, fmt.Sprintf("pacman -Qo '%s' && pacman -Qkk %s", p.Exe, p.Identity.Package))
+			case "snap":
+				out = append(out, fmt.Sprintf("snap list %s", p.Identity.Package))
+			case "flatpak":
+				out = append(out, fmt.Sprintf("flatpak info %s", p.Identity.Package))
+			case "unpackaged", "":
+				out = append(out, fmt.Sprintf("dpkg -S '%s' 2>/dev/null || rpm -qf '%s' 2>/dev/null || pacman -Qo '%s'   # which package owns it, if any", p.Exe, p.Exe, p.Exe))
+			}
 		}
 		out = append(out, fmt.Sprintf("sudo ss -tnp | grep 'pid=%s'", pid))
 		if dst != "" {
