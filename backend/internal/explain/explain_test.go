@@ -106,6 +106,14 @@ func TestAssess(t *testing.T) {
 	}
 }
 
+func TestAssessUnknownOwner(t *testing.T) {
+	rep := &Report{Program: Program{Name: "(unknown process)", OS: "linux"}, Destinations: []Destination{{Dst: "8.8.8.8", Port: 53, Proto: "udp", Infra: Classify("Google", "", "", ""), OtherHosts: 2}}}
+	Assess(rep, time.Now())
+	if rep.Assessment.Level != "expected" || len(rep.Signals) != 1 || !strings.Contains(rep.Signals[0].Text, "could not resolve") || !strings.Contains(rep.Signals[0].Text, "eBPF") {
+		t.Fatalf("unknown owner: %+v %+v", rep.Assessment, rep.Signals)
+	}
+}
+
 func TestVerifyCommands(t *testing.T) {
 	rep := &Report{Program: Program{OS: "windows", Exe: `C:\x\svchost.exe`, Pids: []int{1234}, Known: Lookup("svchost.exe", "")}, Destinations: []Destination{{Dst: "8.8.8.8"}}}
 	cmds := strings.Join(verifyCommands(rep), "\n")

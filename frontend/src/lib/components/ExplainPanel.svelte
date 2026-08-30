@@ -7,7 +7,7 @@
   const p = $derived(report.program)
 
   // External look-ups (opened in a new tab; nothing is sent until clicked).
-  const base = $derived(p.name || p.exe.split(/[\\/]/).pop() || '')
+  const base = $derived(p.exe ? (p.exe.split(/[\\/]/).pop() || p.name) : (p.name === '(unknown process)' ? '' : p.name))
   const q = $derived(encodeURIComponent(base + (p.os === 'windows' ? ' process' : ' linux process')))
   let links = $derived([
     { label: 'Google', href: `https://www.google.com/search?q=${q}` },
@@ -63,19 +63,23 @@
     <div>
       <h4>What it is
         {#if p.known_source === 'user'}<span class="badge good" title="from your knowledge base">yours</span>{/if}
-        <button class="small" onclick={startEdit}>{p.known_source === 'user' ? 'Edit entry' : p.known ? 'Override in knowledge base' : 'Add to knowledge base'}</button>
+        {#if base}<button class="small" onclick={startEdit}>{p.known_source === 'user' ? 'Edit entry' : p.known ? 'Override in knowledge base' : 'Add to knowledge base'}</button>{/if}
         {#if p.known_source === 'user'}<button class="small" onclick={deleteKB}>Remove</button>{/if}
       </h4>
       {#if p.known}
         <div><b>{p.known.title}</b> {#if p.known.category}<span class="badge">{p.known.category}</span>{/if}</div>
         <p class="small">{p.known.description}</p>
         {#if p.known.expected}<p class="small muted"><b>Normally talks to:</b> {p.known.expected}</p>{/if}
-      {:else}
+      {:else if base}
         <p class="small muted">Not in the knowledge base — judge it by its path, hash and destinations, or add what you know.</p>
+      {:else}
+        <p class="small muted">Connections the agent could not attribute to a process — see the signal on the right; the destinations below are still real.</p>
       {/if}
-      <div class="row small" style="gap:.5rem; margin:.2rem 0 .4rem"><span class="muted">look up:</span>
-        {#each links as l (l.label)}<a href={l.href} target="_blank" rel="noopener">{l.label} ↗</a>{/each}
-      </div>
+      {#if base}
+        <div class="row small" style="gap:.5rem; margin:.2rem 0 .4rem"><span class="muted">look up:</span>
+          {#each links as l (l.label)}<a href={l.href} target="_blank" rel="noopener">{l.label} ↗</a>{/each}
+        </div>
+      {/if}
       {#if editing}
         <div class="kb">
           <div class="fields">

@@ -505,8 +505,10 @@ func (s *Server) explainProgram(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "agent or host is required")
 		return
 	}
-	if req.Exe == "" {
-		writeErr(w, http.StatusBadRequest, "exe is required")
+	// An empty exe is a valid key: the agent's "(unknown process)" group — sockets whose owner it
+	// could not resolve. It must still be given explicitly.
+	if !q.Has("exe") {
+		writeErr(w, http.StatusBadRequest, "exe is required (may be empty for the unknown-process group)")
 		return
 	}
 	win, err := s.window(r)

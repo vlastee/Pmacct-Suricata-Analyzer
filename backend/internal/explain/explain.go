@@ -137,19 +137,22 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Report, error) {
 	if len(sum.Names) > 0 {
 		name = sum.Names[0]
 	}
-	if name == "" {
+	if name == "" && req.Exe != "" {
 		name = path.Base(strings.ReplaceAll(req.Exe, `\`, "/"))
+	}
+	if name == "" {
+		name = "(unknown process)"
 	}
 	rep.Program = Program{Name: name, Exe: req.Exe, User: req.User, Container: req.Container, Hashes: sum.Hashes, Hosts: sum.Hosts, Agents: sum.Agents,
 		Conns: sum.Conns, FirstSeen: sum.FirstEver, LastSeen: sum.LastEver, FirstInWindow: sum.FirstInWindow, Pids: sum.Pids, Cmdline: sum.Cmdline}
 	// User-maintained entries take precedence over the built-in knowledge base.
-	if entries, err := b.DB.ListKB(ctx); err == nil {
+	if entries, err := b.DB.ListKB(ctx); err == nil && req.Exe != "" {
 		if m := db.MatchKB(entries, name, req.Exe, sum.Hashes); m != nil {
 			rep.Program.Known = &Known{Title: m.Title, Category: m.Category, Description: m.Description, Expected: m.Expected, Verify: m.Verify, Risk: m.Risk}
 			rep.Program.KnownSource, rep.Program.KnownID = "user", m.ID
 		}
 	}
-	if rep.Program.Known == nil {
+	if rep.Program.Known == nil && req.Exe != "" {
 		if k := Lookup(name, req.Exe); k != nil {
 			rep.Program.Known, rep.Program.KnownSource = k, "builtin"
 		}
@@ -280,7 +283,14 @@ func Assess(rep *Report, now time.Time) {
 	}
 	p := &rep.Program
 	k := p.Known
+	unknownOwner := p.Exe == "" && (p.Name == "" || p.Name == "(unknown process)")
 	switch {
+	case unknownOwner:
+		hint := "Switch the agent to eBPF capture (auto/ebpf), which attributes connections at connect() time instead of polling."
+		if strings.EqualFold(p.OS, "windows") {
+			hint = "These are usually connections from processes that exited between two polls; the ETW backend will attribute them at connect time."
+		}
+		add("info", "Sockets whose owning process the agent could not resolve: the process exited before the next poll, or its file descriptors were not readable (another user's or a container's namespace without permission). %s", hint)
 	case k == nil:
 		add("info", "%s is not in the knowledge base — identify it by path, hash and destinations.", p.Name)
 	case k.Risk == "no-network":
@@ -293,7 +303,7 @@ func Assess(rep *Report, now time.Time) {
 	if suspiciousPath(p.Exe) {
 		add("warn", "Executable lives in a temporary/download location (%s) — legitimate software rarely runs from there.", p.Exe)
 	}
-	if p.Exe == "" {
+	if p.Exe == "" && !unknownOwner {
 		add("info", "The agent could not read the executable path (process exited quickly, or a kernel thread).")
 	}
 	if len(p.Hashes) > 1 {

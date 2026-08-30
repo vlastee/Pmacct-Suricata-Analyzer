@@ -809,6 +809,9 @@ func TestAgents(t *testing.T) {
 	if code := e.get(t, "/api/v1/explain/program?exe=x", nil); code != 400 {
 		t.Errorf("explain without scope: http %d, want 400", code)
 	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&since=1h", en.AgentID), nil); code != 400 {
+		t.Errorf("explain without exe param: http %d, want 400", code)
+	}
 	// User knowledge base: a path-glob entry overrides the built-in browser entry for chrome.
 	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM kb_entries`)
 	t.Cleanup(func() { _, _ = e.db.Pool.Exec(ctx, `DELETE FROM kb_entries`) })
@@ -869,6 +872,13 @@ func TestAgents(t *testing.T) {
 			}
 			return "no alerts"
 		}())
+	}
+	// The unknown-process group (empty exe) is explainable: a batch row without exe/name/user.
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, map[string]any{"conns": []map[string]any{{"minute": minute, "src": "192.168.1.10", "proto": "udp", "dst": "1.1.1.1", "dst_port": 53, "count": 2}}}, nil); code != 200 {
+		t.Fatalf("unknown-owner batch: http %d", code)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=&user=&since=1h", en.AgentID), &rep); code != 200 || rep.Program.Name != "(unknown process)" || rep.Program.Known != nil || len(rep.Destinations) != 1 || len(rep.Signals) == 0 || !strings.Contains(rep.Signals[0].Text, "could not resolve") {
+		t.Fatalf("explain unknown group: http %d %+v %+v", code, rep.Program, rep.Signals)
 	}
 	// Revoke → token stops working; delete → agent and its data gone.
 	if code := e.send(t, "POST", fmt.Sprintf("/api/v1/agents/%d/revoke", en.AgentID), nil, nil); code != 200 {
