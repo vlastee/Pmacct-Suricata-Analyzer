@@ -33,6 +33,7 @@ export interface TLSInfo {
 }
 export interface IPNote { id: number; ip: string; body: string; author: string; created_at: string }
 export interface Exclusion { id: number; pattern: string; kind: 'ip' | 'cidr' | 'name'; note: string; created_at: string }
+export interface AlertRetention { auto_resolve_days: number; delete_resolved_days: Record<string, number> }
 export interface AlertSummary { open: number; acked: number; critical: number; warning: number; info: number; by_rule: Record<string, number>; last_24h: number }
 export interface RuleParam { name: string; description: string; default: any }
 export interface RuleInfo {
@@ -150,6 +151,11 @@ export const api = {
   alertSummary: () => request<AlertSummary>('/api/v1/alerts/summary'),
   alertAction: (id: number, action: 'ack' | 'resolve' | 'reopen') => request<Alert>(`/api/v1/alerts/${id}/${action}`, { method: 'POST' }),
   resolveAlerts: (o: { rule?: string; host?: string }) => request<{ resolved: number }>(`/api/v1/alerts/resolve${qs(o)}`, { method: 'POST' }),
+  deleteResolvedAlerts: (o: { rule?: string; host?: string; severity?: string }) => request<{ deleted: number }>(`/api/v1/alerts/resolved${qs(o)}`, { method: 'DELETE' }),
+  deleteAlert: (id: number) => request<{ deleted: number }>(`/api/v1/alerts/${id}`, { method: 'DELETE' }),
+  alertSettings: () => request<AlertRetention>('/api/v1/alerts/settings'),
+  setAlertSettings: (r: AlertRetention) =>
+    request<{ settings: AlertRetention; deleted: Record<string, number> }>('/api/v1/alerts/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(r) }),
   rules: () => request<{ enabled: boolean; interval?: string; items: RuleInfo[] }>('/api/v1/rules'),
   updateRule: (name: string, body: { enabled?: boolean; severity?: string; params?: Record<string, any>; exempt_hosts?: string[]; interval?: string; window?: string }) =>
     request<RuleInfo>(`/api/v1/rules/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),

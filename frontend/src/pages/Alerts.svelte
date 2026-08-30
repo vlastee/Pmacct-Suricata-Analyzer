@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Alert } from '../lib/api'
+  import { api, type Alert, type AlertRetention } from '../lib/api'
   import { router } from '../lib/router.svelte'
   import { exclusions } from '../lib/exclusions.svelte'
   import { fmtAgo, fmtTime } from '../lib/format'
@@ -44,6 +44,43 @@
   async function act(a: Alert, action: 'ack' | 'resolve' | 'reopen') {
     try { await api.alertAction(a.id, action); await load() } catch (e: any) { error = e.message }
   }
+  function filterText() {
+    const parts = []
+    if (rule) parts.push(`rule ${rule}`)
+    if (q.get('host')) parts.push(`host ${q.get('host')}`)
+    if (severity) parts.push(`severity ${severity}`)
+    return parts.length ? ` matching ${parts.join(', ')}` : ''
+  }
+  async function deleteResolved() {
+    if (!confirm(`Permanently delete all resolved alerts${filterText()}? This cannot be undone.`)) return
+    try {
+      const r = await api.deleteResolvedAlerts({ rule: rule || undefined, host: q.get('host') ?? undefined, severity: severity || undefined })
+      notice = `deleted ${r.deleted} resolved alert${r.deleted === 1 ? '' : 's'}`
+      await load()
+    } catch (e: any) { error = e.message }
+  }
+  async function deleteOne(a: Alert) {
+    if (!confirm(`Permanently delete this resolved alert?\n${a.title}`)) return
+    try { await api.deleteAlert(a.id); await load() } catch (e: any) { error = e.message }
+  }
+  let notice = $state('')
+  // retention settings
+  let showRetention = $state(false)
+  let retention = $state<AlertRetention | null>(null)
+  let retMsg = $state('')
+  async function loadRetention() { try { retention = await api.alertSettings() } catch (e: any) { retMsg = e.message } }
+  $effect(() => { if (showRetention && !retention) loadRetention() })
+  async function saveRetention() {
+    if (!retention) return
+    retMsg = 'saving…'
+    try {
+      const r = await api.setAlertSettings(retention)
+      retention = r.settings
+      const del = Object.entries(r.deleted).map(([s, n]) => `${n} ${s}`).join(', ')
+      retMsg = del ? `saved · deleted ${del}` : 'saved'
+      await load()
+    } catch (e: any) { retMsg = e.message }
+  }
   async function resolveRule() {
     if (!rule) return
     if (!confirm(`Resolve all active "${rule}" alerts?`)) return
@@ -64,8 +101,34 @@
     <button class="small" onclick={resolveRule}>Resolve all</button>{/if}
   {#if q.get('host')}<span class="badge">host: {q.get('host')} <button class="x" onclick={() => router.setQuery({ host: undefined })}>×</button></span>{/if}
   <span class="spacer"></span>
+  {#if notice}<span class="small muted">{notice}</span>{/if}
+  {#if view === 'resolved' || view === 'all'}
+    <button class="small" onclick={deleteResolved} title="Permanently delete resolved alerts (honours the rule / host / severity filters)">Delete resolved{filterText() ? '…' : ''}</button>
+  {/if}
   <span class="muted small">{total} alert{total === 1 ? '' : 's'}</span>
+  <button class="small" onclick={() => (showRetention = !showRetention)} title="Auto-resolve and deletion timing">⚙ retention</button>
 </div>
+{#if showRetention}
+  <div class="card" style="margin-bottom:1rem">
+    <h3>Alert retention</h3>
+    {#if retention}
+      <div class="row small" style="gap:1rem; flex-wrap:wrap">
+        <label class="row" style="gap:.3rem">auto-resolve open alerts idle for
+          <input type="number" min="1" max="365" bind:value={retention.auto_resolve_days} style="width:4.5rem" /> days</label>
+        <span class="muted">·</span>
+        <span>delete resolved after</span>
+        {#each ['info', 'warning', 'critical'] as sev (sev)}
+          <label class="row" style="gap:.3rem"><span class="badge {sev === 'info' ? '' : sev}">{sev}</span>
+            <input type="number" min="0" max="3650" bind:value={retention.delete_resolved_days[sev]} style="width:4.5rem" /> days</label>
+        {/each}
+        <span class="muted">(0 = keep forever)</span>
+        <button class="primary small" onclick={saveRetention}>Save</button>
+        {#if retMsg}<span class="muted">{retMsg}</span>{/if}
+      </div>
+      <p class="small muted" style="margin:.5rem 0 0">Open and acked alerts are never deleted automatically; they resolve after the idle period, then the per-severity timer starts. Saving applies the deletion immediately and daily thereafter.</p>
+    {:else}<span class="small muted">{retMsg || 'loading…'}</span>{/if}
+  </div>
+{/if}
 
 <Loading {error} loading={loading && !items.length} />
 <div class="card overflow">
@@ -86,7 +149,7 @@
             {#if a.state === 'open'}<button class="small" onclick={() => act(a, 'ack')}>Ack</button>{/if}
             {#if a.state === 'acked'}<button class="small" onclick={() => act(a, 'reopen')}>Reopen</button>{/if}
             {#if a.state !== 'resolved'}<button class="small" onclick={() => act(a, 'resolve')}>Resolve</button>
-            {:else}<span class="badge good">resolved</span> <button class="small" onclick={() => act(a, 'reopen')} title="Move back to open">Reopen</button>{/if}
+            {:else}<span class="badge good">resolved</span> <button class="small" onclick={() => act(a, 'reopen')} title="Move back to open">Reopen</button> <button class="small" onclick={() => deleteOne(a)} title="Permanently delete">Delete</button>{/if}
           </td>
         </tr>
         {#if expanded === a.id}

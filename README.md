@@ -253,7 +253,10 @@ show a `trusted` badge. API: `GET/POST /api/v1/exclusions`, `DELETE /api/v1/excl
 
 **Alert lifecycle**: open → acked → resolved, and **resolved → open** again via *Reopen* (refused
 with 409 while a newer alert for the same finding is open). Alerts not seen for 7 days
-auto-resolve (a reopened alert gets a fresh 7 days).
+auto-resolve (a reopened alert gets a fresh 7 days), and resolved alerts are deleted after a
+per-severity period — defaults **info 7 days, warning 60, critical 60** (0 = keep forever). Both
+are editable under *⚙ retention* on the Alerts page (`GET/PUT /api/v1/alerts/settings`); resolved
+alerts can also be deleted by hand (*Delete resolved*, per-row *Delete*).
 
 **Threat feeds** (`THREAT_FEEDS`, refreshed every `THREAT_FEEDS_INTERVAL`) are bulk IP/CIDR lists
 matched entirely locally — no per-IP quota. The default set is abuse.ch Feodo & ThreatFox, Spamhaus

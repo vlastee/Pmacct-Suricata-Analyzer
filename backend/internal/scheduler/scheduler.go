@@ -317,6 +317,13 @@ func (w *Worker) RunRollupsOnce(ctx context.Context) int {
 		} else {
 			_ = w.DB.SetSetting(ctx, "last_prune", now)
 		}
+		if ret, err := w.DB.GetAlertRetention(ctx); err == nil {
+			if n, err := w.DB.PruneResolvedAlerts(ctx, ret); err != nil {
+				slog.Error("prune alerts", "err", err)
+			} else if len(n) > 0 {
+				slog.Info("deleted old resolved alerts", "by_severity", n)
+			}
+		}
 	}
 	_ = w.DB.PurgeExpiredSessions(ctx)
 	_ = w.DB.PurgeExpiredIPRules(ctx)

@@ -539,6 +539,102 @@ func TestTLSInfoDisabled(t *testing.T) {
 	}
 }
 
+func TestDeleteResolvedAlerts(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule IN ('del_a', 'del_b')`)
+	mk := func(rule, host, sev string) *db.Alert {
+		a, err := e.db.UpsertAlert(ctx, db.Finding{Rule: rule, Severity: sev, Host: host, Title: rule + " " + host, Details: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	a1, a2, a3, open := mk("del_a", "10.0.0.31", "warning"), mk("del_a", "10.0.0.32", "critical"), mk("del_b", "10.0.0.33", "warning"), mk("del_b", "10.0.0.34", "warning")
+	for _, a := range []*db.Alert{a1, a2, a3} {
+		e.post(t, fmt.Sprintf("/api/v1/alerts/%d/resolve", a.ID), nil)
+	}
+	// Per-alert delete refuses open alerts and unknown ids.
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/alerts/%d", open.ID), nil, nil); code != 409 {
+		t.Errorf("delete open alert: http %d, want 409", code)
+	}
+	if code := e.send(t, "DELETE", "/api/v1/alerts/999999999", nil, nil); code != 404 {
+		t.Errorf("delete missing alert: http %d, want 404", code)
+	}
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/alerts/%d", a3.ID), nil, nil); code != 200 {
+		t.Fatalf("delete resolved alert: http %d", code)
+	}
+	// Bulk delete honours filters: severity=critical within rule del_a removes only a2.
+	var res struct {
+		Deleted int64 `json:"deleted"`
+	}
+	if code := e.send(t, "DELETE", "/api/v1/alerts/resolved?rule=del_a&severity=critical", nil, &res); code != 200 || res.Deleted != 1 {
+		t.Fatalf("bulk filtered: http %d %+v", code, res)
+	}
+	if code := e.send(t, "DELETE", "/api/v1/alerts/resolved?severity=urgent", nil, nil); code != 400 {
+		t.Errorf("bad severity: http %d, want 400", code)
+	}
+	if code := e.send(t, "DELETE", "/api/v1/alerts/resolved?rule=del_a", nil, &res); code != 200 || res.Deleted != 1 {
+		t.Fatalf("bulk by rule: http %d %+v", code, res)
+	}
+	var al struct {
+		Items []db.Alert `json:"items"`
+	}
+	e.get(t, "/api/v1/alerts?state=all&rule=del_b", &al)
+	if len(al.Items) != 1 || al.Items[0].ID != open.ID {
+		t.Fatalf("open alert must survive: %+v", al.Items)
+	}
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule IN ('del_a', 'del_b')`)
+}
+
+func TestAlertRetentionSettings(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule = 'ret_test'`)
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = 'alert_retention'`)
+	t.Cleanup(func() { _, _ = e.db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = 'alert_retention'`) })
+	var ret db.AlertRetention
+	e.get(t, "/api/v1/alerts/settings", &ret)
+	if ret.AutoResolveDays != 7 || ret.DeleteResolvedDays["info"] != 7 || ret.DeleteResolvedDays["critical"] != 60 {
+		t.Fatalf("defaults: %+v", ret)
+	}
+	// Two resolved alerts, resolved 10 days ago: info is past a 7-day retention, critical is not.
+	for _, sev := range []string{"info", "critical"} {
+		a, err := e.db.UpsertAlert(ctx, db.Finding{Rule: "ret_test", Severity: sev, Host: "10.0.0.4" + map[string]string{"info": "1", "critical": "2"}[sev], Title: sev, Details: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.db.Pool.Exec(ctx, `UPDATE alerts SET state='resolved', resolved_at = now() - interval '10 days' WHERE id = $1`, a.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var res struct {
+		Settings db.AlertRetention `json:"settings"`
+		Deleted  map[string]int64  `json:"deleted"`
+	}
+	if code := e.send(t, "PUT", "/api/v1/alerts/settings", map[string]any{"auto_resolve_days": 3, "delete_resolved_days": map[string]int{"info": 7, "critical": 0}}, &res); code != 200 {
+		t.Fatalf("put: http %d", code)
+	}
+	if res.Settings.AutoResolveDays != 3 || res.Settings.DeleteResolvedDays["warning"] != 60 || res.Deleted["info"] != 1 || res.Deleted["critical"] != 0 {
+		t.Fatalf("put result: %+v", res)
+	}
+	var al struct {
+		Items []db.Alert `json:"items"`
+	}
+	e.get(t, "/api/v1/alerts?rule=ret_test&state=all", &al)
+	if len(al.Items) != 1 || al.Items[0].Severity != "critical" {
+		t.Fatalf("critical (keep forever) should survive, info deleted: %+v", al.Items)
+	}
+	if code := e.send(t, "PUT", "/api/v1/alerts/settings", map[string]any{"auto_resolve_days": 0}, nil); code != 400 {
+		t.Errorf("bad settings: http %d, want 400", code)
+	}
+	e.get(t, "/api/v1/alerts/settings", &ret)
+	if ret.AutoResolveDays != 3 {
+		t.Errorf("settings not persisted: %+v", ret)
+	}
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM alerts WHERE rule = 'ret_test'`)
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

@@ -58,7 +58,7 @@ ON CONFLICT (host, peer, day) DO UPDATE SET bytes = host_peer_daily.bytes + EXCL
 	return tag.RowsAffected(), nil
 }
 
-// PruneRollups deletes old rollup rows and old IDS events.
+// PruneRollups deletes old rollup rows and old IDS events (resolved alerts: PruneResolvedAlerts).
 func (d *DB) PruneRollups(ctx context.Context, hourly, daily, ids time.Duration) error {
 	for _, q := range []struct {
 		sql string
@@ -67,7 +67,6 @@ func (d *DB) PruneRollups(ctx context.Context, hourly, daily, ids time.Duration)
 		{`DELETE FROM host_hourly WHERE hour < now() - $1::interval`, hourly},
 		{`DELETE FROM host_peer_daily WHERE day < (now() - $1::interval)::date`, daily},
 		{`DELETE FROM ids_events WHERE ts < now() - $1::interval`, ids},
-		{`DELETE FROM alerts WHERE state = 'resolved' AND resolved_at < now() - $1::interval`, daily},
 	} {
 		if _, err := d.Pool.Exec(ctx, q.sql, q.d.String()); err != nil {
 			return err

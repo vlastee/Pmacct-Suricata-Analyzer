@@ -79,6 +79,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/alerts", s.listAlerts)
 	mux.HandleFunc("GET /api/v1/alerts/summary", s.alertSummary)
 	mux.HandleFunc("POST /api/v1/alerts/resolve", s.resolveAlerts)
+	mux.HandleFunc("DELETE /api/v1/alerts/resolved", s.adminOnly(s.deleteResolvedAlerts))
+	mux.HandleFunc("GET /api/v1/alerts/settings", s.alertSettings)
+	mux.HandleFunc("PUT /api/v1/alerts/settings", s.adminOnly(s.setAlertSettings))
+	mux.HandleFunc("DELETE /api/v1/alerts/{id}", s.adminOnly(s.deleteAlert))
 	mux.HandleFunc("POST /api/v1/alerts/{id}/{action}", s.alertAction)
 	mux.HandleFunc("GET /api/v1/rules", s.listRules)
 	mux.HandleFunc("PUT /api/v1/rules/{name}", s.updateRule)
@@ -915,6 +919,85 @@ func (s *Server) resolveAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"resolved": n})
+}
+
+// alertSettings returns the retention configuration.
+func (s *Server) alertSettings(w http.ResponseWriter, r *http.Request) {
+	ret, err := s.DB.GetAlertRetention(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ret)
+}
+
+// setAlertSettings stores the retention configuration and applies the deletion part right away,
+// reporting what it removed so the change is visible immediately.
+func (s *Server) setAlertSettings(w http.ResponseWriter, r *http.Request) {
+	var ret db.AlertRetention
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&ret); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := ret.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.DB.SetAlertRetention(r.Context(), ret); err != nil {
+		s.fail(w, err)
+		return
+	}
+	deleted, err := s.DB.PruneResolvedAlerts(r.Context(), ret)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": ret, "deleted": deleted})
+}
+
+// deleteResolvedAlerts permanently removes resolved alerts matching the page's filters.
+func (s *Server) deleteResolvedAlerts(w http.ResponseWriter, r *http.Request) {
+	host := ""
+	if v := r.URL.Query().Get("host"); v != "" {
+		var ok bool
+		if host, ok = parseIP(w, v); !ok {
+			return
+		}
+	}
+	sev := r.URL.Query().Get("severity")
+	if sev != "" && db.SeverityRank(sev) == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid severity")
+		return
+	}
+	n, err := s.DB.DeleteResolvedAlerts(r.Context(), r.URL.Query().Get("rule"), host, sev)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
+}
+
+// deleteAlert permanently removes one resolved alert (409 while it is still open/acked).
+func (s *Server) deleteAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	deleted, existed, err := s.DB.DeleteAlert(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !existed {
+		writeErr(w, http.StatusNotFound, "alert not found")
+		return
+	}
+	if !deleted {
+		writeErr(w, http.StatusConflict, "only resolved alerts can be deleted — resolve it first")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
 // ---- rules ----

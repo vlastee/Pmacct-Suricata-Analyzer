@@ -268,6 +268,46 @@ func (d *DB) ResolveAlerts(ctx context.Context, rule, host string) (int64, error
 	return tag.RowsAffected(), nil
 }
 
+// DeleteResolvedAlerts removes resolved alerts matching the optional rule/host/severity filters
+// (the Alerts page's "Delete resolved" button). Open and acked alerts are never touched.
+func (d *DB) DeleteResolvedAlerts(ctx context.Context, rule, host, severity string) (int64, error) {
+	args := []any{}
+	conds := []string{"state = 'resolved'"}
+	if rule != "" {
+		args = append(args, rule)
+		conds = append(conds, fmt.Sprintf("rule = $%d", len(args)))
+	}
+	if host != "" {
+		args = append(args, host)
+		conds = append(conds, fmt.Sprintf("(host = $%d::inet OR peer = $%d::inet)", len(args), len(args)))
+	}
+	if severity != "" {
+		args = append(args, severity)
+		conds = append(conds, fmt.Sprintf("severity = $%d", len(args)))
+	}
+	tag, err := d.Pool.Exec(ctx, `DELETE FROM alerts WHERE `+strings.Join(conds, " AND "), args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteAlert removes one alert if it is resolved. Returns (deleted, existed).
+func (d *DB) DeleteAlert(ctx context.Context, id int64) (deleted, existed bool, err error) {
+	tag, err := d.Pool.Exec(ctx, `DELETE FROM alerts WHERE id = $1 AND state = 'resolved'`, id)
+	if err != nil {
+		return false, false, err
+	}
+	if tag.RowsAffected() > 0 {
+		return true, true, nil
+	}
+	err = d.Pool.QueryRow(ctx, `SELECT true FROM alerts WHERE id = $1`, id).Scan(&existed)
+	if err == pgx.ErrNoRows {
+		return false, false, nil
+	}
+	return false, existed, err
+}
+
 // AutoResolveStale resolves open alerts not seen for the given duration.
 func (d *DB) AutoResolveStale(ctx context.Context, after time.Duration) (int64, error) {
 	tag, err := d.Pool.Exec(ctx, `UPDATE alerts SET state='resolved', resolved_at=now()

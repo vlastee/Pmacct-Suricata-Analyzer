@@ -469,7 +469,8 @@ func (e *Engine) Tick(ctx context.Context) {
 			slog.Error("rule failed", "rule", r.Name, "err", err)
 		}
 	}
-	if n, err := e.DB.AutoResolveStale(ctx, 7*24*time.Hour); err == nil && n > 0 {
+	ret, _ := e.DB.GetAlertRetention(ctx) // defaults on error
+	if n, err := e.DB.AutoResolveStale(ctx, ret.AutoResolveAfter()); err == nil && n > 0 {
 		slog.Info("auto-resolved stale alerts", "n", n)
 	}
 }
