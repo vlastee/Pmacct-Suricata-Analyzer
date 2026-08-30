@@ -222,6 +222,14 @@
       {#if info?.lists?.length}
         <div class="row small" style="margin-bottom:.5rem"><span class="badge critical">⛔ threat lists</span> {info.lists.join(', ')}</div>
       {/if}
+      {#if !h.local}
+        <div class="row small" style="margin-bottom:.5rem; gap:.6rem"><span class="muted">look up:</span>
+          <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" rel="noopener">VirusTotal ↗</a>
+          <a href="https://www.abuseipdb.com/check/{ip}" target="_blank" rel="noopener">AbuseIPDB ↗</a>
+          <a href="https://viz.greynoise.io/ip/{ip}" target="_blank" rel="noopener">GreyNoise ↗</a>
+          <a href="https://www.shodan.io/host/{ip}" target="_blank" rel="noopener">Shodan ↗</a>
+        </div>
+      {/if}
       {#if h.local}
         <div class="muted">Local address — not enriched.</div>
       {:else if !info}
@@ -244,9 +252,9 @@
         </dl>
         <h3 style="margin-top:1rem">VirusTotal</h3>
         {#if !vt}
-          <div class="muted small">Not checked yet.</div>
+          <div class="muted small">Not checked yet — <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" rel="noopener">open on VirusTotal ↗</a></div>
         {:else if vt.status !== 'ok'}
-          <div class="error small">Lookup failed: {vt.error}</div>
+          <div class="error small">Lookup failed: {vt.error} — <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" rel="noopener">open on VirusTotal ↗</a></div>
         {:else}
           {@const bad = (vt.malicious ?? 0) > 0 || (vt.suspicious ?? 0) > 0}
           <div class="row">
