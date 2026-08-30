@@ -4,6 +4,33 @@ use anyhow::{Context, Result};
 pub const SERVICE_NAME: &str = "pmacct-agent";
 
 #[cfg(target_os = "linux")]
+const UNIT_PATH: &str = "/etc/systemd/system/pmacct-agent.service";
+
+/// The unit text. /usr/local/bin is writable for the service so it can replace its own binary
+/// on update (everything else stays read-only under ProtectSystem=strict).
+#[cfg(target_os = "linux")]
+fn unit_text(spool: &std::path::Path) -> String {
+    format!(
+        "[Unit]\nDescription=pmacct-analyzer endpoint agent\nAfter=network-online.target\nWants=network-online.target\n\n\
+[Service]\nExecStart=/usr/local/bin/pmacct-agent run\nRestart=always\nRestartSec=5\nUser=root\nProtectSystem=strict\nReadWritePaths=/etc/pmacct-agent /usr/local/bin {}\nNoNewPrivileges=yes\nPrivateTmp=yes\n\n\
+[Install]\nWantedBy=multi-user.target\n",
+        spool.display()
+    )
+}
+
+/// Rewrite the unit when it predates self-update support (missing /usr/local/bin write access).
+#[cfg(target_os = "linux")]
+pub fn refresh_unit(cfg: &agent_core::config::Config) {
+    if let Ok(cur) = std::fs::read_to_string(UNIT_PATH) {
+        let want = unit_text(&cfg.spool_dir());
+        if cur != want && std::fs::write(UNIT_PATH, &want).is_ok() {
+            let _ = std::process::Command::new("systemctl").arg("daemon-reload").status();
+            println!("updated the systemd unit for self-update support");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 pub fn install() -> Result<()> {
     use agent_core::config::Config;
     let cfg = Config::load(&Config::default_path()).context("load configuration (run `pmacct-agent enroll` first)")?;
@@ -14,14 +41,7 @@ pub fn install() -> Result<()> {
     if exe != target {
         std::fs::copy(&exe, target).with_context(|| format!("copy {} to {}", exe.display(), target.display()))?;
     }
-    let unit = format!(
-        "[Unit]\nDescription=pmacct-analyzer endpoint agent\nAfter=network-online.target\nWants=network-online.target\n\n\
-[Service]\nExecStart={}\nRestart=always\nRestartSec=5\nUser=root\nProtectSystem=strict\nReadWritePaths=/etc/pmacct-agent {}\nNoNewPrivileges=yes\nPrivateTmp=yes\n\n\
-[Install]\nWantedBy=multi-user.target\n",
-        format!("{} run", target.display()),
-        spool.display()
-    );
-    std::fs::write("/etc/systemd/system/pmacct-agent.service", unit).context("write unit")?;
+    std::fs::write(UNIT_PATH, unit_text(&spool)).context("write unit")?;
     for args in [vec!["daemon-reload"], vec!["enable", "--now", SERVICE_NAME]] {
         let st = std::process::Command::new("systemctl").args(&args).status().context("systemctl")?;
         anyhow::ensure!(st.success(), "systemctl {:?} failed", args);

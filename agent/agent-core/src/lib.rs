@@ -8,5 +8,6 @@ pub mod config;
 pub mod model;
 pub mod pin;
 pub mod spool;
+pub mod version;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

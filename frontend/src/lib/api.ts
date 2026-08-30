@@ -34,7 +34,7 @@ export interface TLSInfo {
 export interface Agent {
   id: number; name: string; hostname: string; os: string; arch: string; version: string; ips: string[]; capture: string
   enrolled_at: string; last_seen: string | null; last_ip: string | null; events_total: number; last_batch: number; dropped: number
-  revoked_at: string | null; note: string
+  revoked_at: string | null; note: string; auto_update: boolean
 }
 export interface AgentActivity {
   rows: number; conns: number; programs: number; peers: number; first: string | null; last: string | null; bucket_seconds: number
@@ -43,8 +43,8 @@ export interface AgentActivity {
   timeline: { at: string; conns: number; programs: number }[]
   recent: { minute: string; src: string; proto: string; dst: string; dst_port: number; name: string; user: string; container: string; count: number }[]
 }
-export interface AgentRetention { conn_days: number; stale_agent_days: number }
-export interface AgentBuild { target: string; file: string; size: number; sha256: string; built: string }
+export interface AgentRetention { conn_days: number; stale_agent_days: number; auto_update: boolean }
+export interface AgentBuild { target: string; file: string; version: string; size: number; sha256: string; built: string }
 export interface EnrollToken { enroll_token: string; expires_at: string; server_url: string; tls_required: boolean; ca_fingerprint_sha256?: string; ca_spki_sha256?: string }
 export interface ProcessStat { host?: string; exe: string; name: string; user: string; container: string; sha256: string; conns: number; bytes: number; peers: number; ports: number; last_seen: string; top_peers: string[] }
 export interface KBEntry {
@@ -225,6 +225,7 @@ export const api = {
   updateAgent: (id: number, name: string, note: string) =>
     request<Agent>(`/api/v1/agents/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, note }) }),
   revokeAgent: (id: number) => request<{ ok: boolean }>(`/api/v1/agents/${id}/revoke`, { method: 'POST' }),
+  setAgentAutoUpdate: (id: number, on: boolean) => request<{ ok: boolean }>(`/api/v1/agents/${id}/${on ? 'autoupdate-on' : 'autoupdate-off'}`, { method: 'POST' }),
   deleteAgent: (id: number) => request<{ deleted: number }>(`/api/v1/agents/${id}`, { method: 'DELETE' }),
   kb: () => request<{ items: KBEntry[] }>('/api/v1/kb'),
   upsertKB: (e: Partial<KBEntry>) => request<KBEntry>('/api/v1/kb', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(e) }),

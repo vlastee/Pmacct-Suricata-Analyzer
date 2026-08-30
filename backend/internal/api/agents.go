@@ -164,7 +164,16 @@ func (s *Server) agentEvents(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": n, "rejected": rejected, "server_time": now})
+	out := map[string]any{"accepted": n, "rejected": rejected, "server_time": now}
+	// Self-update: tell the agent what this image can hand out and whether it may take it.
+	if target := db.BuildTarget(a.OS, a.Arch); target != "" {
+		if b, ok := s.buildInfo(target); ok && b.Version != "" {
+			out["build"] = map[string]any{"target": b.Target, "version": b.Version, "sha256": b.SHA256, "size": b.Size}
+			ret, _ := s.DB.GetAgentRetention(r.Context())
+			out["auto_update"] = ret.AutoUpdate && a.AutoUpdate
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func validConn(c *db.EndpointConn, now time.Time) bool {
@@ -355,8 +364,12 @@ func (s *Server) agentAdminAction(w http.ResponseWriter, r *http.Request) {
 	switch r.PathValue("action") {
 	case "revoke":
 		ok, err = s.DB.RevokeAgent(r.Context(), id)
+	case "autoupdate-on":
+		ok, err = s.DB.SetAgentAutoUpdate(r.Context(), id, true)
+	case "autoupdate-off":
+		ok, err = s.DB.SetAgentAutoUpdate(r.Context(), id, false)
 	default:
-		writeErr(w, http.StatusBadRequest, "action must be revoke")
+		writeErr(w, http.StatusBadRequest, "action must be revoke, autoupdate-on or autoupdate-off")
 		return
 	}
 	if err != nil {

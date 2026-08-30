@@ -2,6 +2,7 @@ mod capture;
 #[cfg(target_os = "linux")]
 mod containers;
 mod procinfo;
+mod update;
 mod runner;
 mod service;
 
@@ -45,6 +46,9 @@ enum Cmd {
         /// Cap on spooled data on disk, in MiB (oldest batches are dropped beyond it)
         #[arg(long, default_value_t = 50)]
         spool_max_mb: u64,
+        /// Never self-update, even when the server enables it
+        #[arg(long)]
+        no_auto_update: bool,
     },
     /// Run the agent (foreground; the installed service uses this too)
     Run {
@@ -57,6 +61,12 @@ enum Cmd {
     Uninstall,
     /// Show the configuration and try one heartbeat
     Status,
+    /// Download and install the server's newer agent build, then restart the service
+    Update {
+        /// Reinstall even when the server's version is not newer
+        #[arg(long)]
+        force: bool,
+    },
     /// Print the current connections with their programs; with --capture ebpf, stream new
     /// connections for --seconds (troubleshooting; run as root/admin)
     Snapshot {
@@ -73,7 +83,7 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).format_timestamp_secs().init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Enroll { server, token, ca_pin, send_cmdline, capture, spool_dir, spool_max_mb } => rt().block_on(enroll(server, token, ca_pin, send_cmdline, capture, spool_dir, spool_max_mb)),
+        Cmd::Enroll { server, token, ca_pin, send_cmdline, capture, spool_dir, spool_max_mb, no_auto_update } => rt().block_on(enroll(server, token, ca_pin, send_cmdline, capture, spool_dir, spool_max_mb, !no_auto_update)),
         Cmd::Run { service } => {
             #[cfg(windows)]
             if service {
@@ -94,6 +104,12 @@ fn main() -> Result<()> {
         Cmd::Uninstall => service::uninstall(),
         Cmd::Status => rt().block_on(status()),
         Cmd::Snapshot { capture, seconds } => snapshot(&capture, seconds),
+        Cmd::Update { force } => {
+            let cfg = Config::load(&Config::default_path())?;
+            #[cfg(target_os = "linux")]
+            service::refresh_unit(&cfg);
+            rt().block_on(update::manual(&cfg, force))
+        }
     }
 }
 
@@ -144,7 +160,7 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
 }
 
-async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdline: bool, capture: String, spool_dir: Option<String>, spool_max_mb: u64) -> Result<()> {
+async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdline: bool, capture: String, spool_dir: Option<String>, spool_max_mb: u64, auto_update: bool) -> Result<()> {
     if spool_max_mb == 0 || spool_max_mb > 100_000 {
         bail!("--spool-max-mb must be between 1 and 100000");
     }
@@ -175,7 +191,7 @@ async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdl
         ips: runner::local_ips(),
     };
     let resp = client::enroll(&server, ca_pem.as_deref(), &req).await.context("enrollment")?;
-    let cfg = Config { server: server.clone(), agent_id: resp.agent_id, token: resp.agent_token, ca_pem, interval_secs: 1, send_every_secs: 30, send_cmdline, capture, spool_dir: spool_dir.filter(|d| !d.trim().is_empty()), spool_max_mb, max_keys: 50_000, local_networks: resp.local_networks };
+    let cfg = Config { server: server.clone(), agent_id: resp.agent_id, token: resp.agent_token, ca_pem, interval_secs: 1, send_every_secs: 30, send_cmdline, capture, spool_dir: spool_dir.filter(|d| !d.trim().is_empty()), spool_max_mb, max_keys: 50_000, auto_update, local_networks: resp.local_networks };
     std::fs::create_dir_all(cfg.spool_dir()).with_context(|| format!("create spool directory {}", cfg.spool_dir().display()))?;
     let path = Config::default_path();
     cfg.save(&path)?;
@@ -191,6 +207,7 @@ async fn status() -> Result<()> {
     println!("server      {}", cfg.server);
     println!("agent id    {}", cfg.agent_id);
     println!("capture     {}", cfg.capture);
+    println!("version     {} · auto-update {}", agent_core::VERSION, if cfg.auto_update { "allowed" } else { "off (local)" });
     let spool = agent_core::spool::Spool::new(cfg.spool_dir(), 500, cfg.spool_max_mb.max(1) * 1024 * 1024);
     println!("spool       {} ({} batches, {:.1} / {} MiB)", spool.dir().display(), spool.len(), spool.size_bytes() as f64 / 1048576.0, cfg.spool_max_mb);
     println!("pinned CA   {}", cfg.ca_pem.as_deref().map(|p| pin::fingerprint_sha256(p).unwrap_or_default()).unwrap_or_else(|| "none (http)".into()));

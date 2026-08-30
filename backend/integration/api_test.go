@@ -726,6 +726,40 @@ func TestAgents(t *testing.T) {
 	if len(list.Items) != 1 || list.Items[0].Version != "0.1.1" || list.Items[0].Capture != "poll" || list.Items[0].Dropped != 2 || list.Items[0].EventsTotal != 4 || len(list.Items[0].IPs) != 1 {
 		t.Fatalf("agents list: %+v", list.Items)
 	}
+	// Self-update: with a build + VERSION in the dist dir the ack advertises it, gated by policy.
+	dist := t.TempDir()
+	e.cfg.AgentDistDir = dist
+	if err := os.WriteFile(filepath.Join(dist, "pmacct-agent-windows-amd64.exe"), []byte("MZ fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "VERSION"), []byte("9.9.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = 'agent_retention'`)
+	var ack struct {
+		Build      *struct{ Target, Version, SHA256 string } `json:"build"`
+		AutoUpdate bool                                      `json:"auto_update"`
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, map[string]any{"conns": []any{}}, &ack); code != 200 || ack.Build == nil || ack.Build.Target != "windows-amd64" || ack.Build.Version != "9.9.9" || ack.Build.SHA256 == "" || !ack.AutoUpdate {
+		t.Fatalf("ack build: http %d %+v", code, ack)
+	}
+	if code := e.send(t, "POST", fmt.Sprintf("/api/v1/agents/%d/autoupdate-off", en.AgentID), nil, nil); code != 200 {
+		t.Fatalf("autoupdate-off: http %d", code)
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, map[string]any{"conns": []any{}}, &ack); code != 200 || ack.Build == nil || ack.AutoUpdate {
+		t.Fatalf("ack after per-agent opt-out: http %d %+v", code, ack)
+	}
+	if code := e.send(t, "POST", fmt.Sprintf("/api/v1/agents/%d/autoupdate-on", en.AgentID), nil, nil); code != 200 {
+		t.Fatalf("autoupdate-on: http %d", code)
+	}
+	if code := e.send(t, "PUT", "/api/v1/agents/settings", map[string]any{"conn_days": 15, "stale_agent_days": 0, "auto_update": false}, nil); code != 200 {
+		t.Fatalf("global auto-update off: http %d", code)
+	}
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, map[string]any{"conns": []any{}}, &ack); code != 200 || ack.AutoUpdate {
+		t.Fatalf("ack after global opt-out: http %d %+v", code, ack)
+	}
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM settings WHERE key = 'agent_retention'`)
+	e.cfg.AgentDistDir = ""
 	// Host processes: duplicates merged (count 7), name derived from the exe.
 	var procs struct {
 		Items  []db.ProcessStat    `json:"items"`
@@ -915,7 +949,7 @@ func TestAgentRetentionSettings(t *testing.T) {
 	})
 	var ret db.AgentRetention
 	e.get(t, "/api/v1/agents/settings", &ret)
-	if ret.ConnDays != 15 || ret.StaleAgentDays != 0 {
+	if ret.ConnDays != 15 || ret.StaleAgentDays != 0 || !ret.AutoUpdate {
 		t.Fatalf("defaults: %+v", ret)
 	}
 	// One fresh agent with a 20-day-old row and a fresh row; one agent silent for 40 days.

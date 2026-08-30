@@ -35,6 +35,9 @@ pub struct Config {
     /// (default 50 000; bounds memory and the size of one batch).
     #[serde(default = "default_max_keys")]
     pub max_keys: usize,
+    /// Local veto for self-updates (the server also has a global toggle and a per-agent switch).
+    #[serde(default = "default_true")]
+    pub auto_update: bool,
     /// Local networks (from enrollment); connections to peers outside them are what matters,
     /// but everything non-loopback is reported so LAN-to-LAN scans are attributable too.
     #[serde(default)]
@@ -55,6 +58,9 @@ fn default_spool_max_mb() -> u64 {
 }
 fn default_max_keys() -> usize {
     50_000
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Config {
@@ -135,7 +141,7 @@ mod tests {
 
     #[test]
     fn spool_dir_precedence() {
-        let base = Config { server: "https://x".into(), agent_id: 1, token: "t".into(), ca_pem: None, interval_secs: 1, send_every_secs: 30, send_cmdline: false, capture: "auto".into(), spool_dir: None, spool_max_mb: 50, max_keys: 50_000, local_networks: vec![] };
+        let base = Config { server: "https://x".into(), agent_id: 1, token: "t".into(), ca_pem: None, interval_secs: 1, send_every_secs: 30, send_cmdline: false, capture: "auto".into(), spool_dir: None, spool_max_mb: 50, max_keys: 50_000, auto_update: true, local_networks: vec![] };
         // Explicit config wins over everything.
         let mut c = base.clone();
         c.spool_dir = Some("/mnt/fast/spool".into());
@@ -152,6 +158,6 @@ mod tests {
         assert_eq!(with.spool_dir(), PathBuf::from("/data/spool"));
         // Older config files without the caps get the defaults.
         let old: Config = toml::from_str("server = \"https://x\"\nagent_id = 1\ntoken = \"t\"\n").unwrap();
-        assert_eq!((old.spool_max_mb, old.max_keys), (50, 50_000));
+        assert_eq!((old.spool_max_mb, old.max_keys, old.auto_update), (50, 50_000, true));
     }
 }

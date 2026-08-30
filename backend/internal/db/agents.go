@@ -31,6 +31,7 @@ type Agent struct {
 	Dropped     int64      `json:"dropped"`
 	RevokedAt   *time.Time `json:"revoked_at"`
 	Note        string     `json:"note"`
+	AutoUpdate  bool       `json:"auto_update"`
 }
 
 // EndpointConn is one per-minute aggregate reported by an agent.
@@ -65,12 +66,12 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-const agentCols = `id, name, hostname, os, arch, version, ips::text[], capture, enrolled_at, last_seen, host(last_ip), events_total, last_batch, dropped, revoked_at, note`
+const agentCols = `id, name, hostname, os, arch, version, ips::text[], capture, enrolled_at, last_seen, host(last_ip), events_total, last_batch, dropped, revoked_at, note, auto_update`
 
 func scanAgent(row pgx.Row) (*Agent, error) {
 	var a Agent
 	var ips []string
-	if err := row.Scan(&a.ID, &a.Name, &a.Hostname, &a.OS, &a.Arch, &a.Version, &ips, &a.Capture, &a.EnrolledAt, &a.LastSeen, &a.LastIP, &a.EventsTotal, &a.LastBatch, &a.Dropped, &a.RevokedAt, &a.Note); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.Hostname, &a.OS, &a.Arch, &a.Version, &ips, &a.Capture, &a.EnrolledAt, &a.LastSeen, &a.LastIP, &a.EventsTotal, &a.LastBatch, &a.Dropped, &a.RevokedAt, &a.Note, &a.AutoUpdate); err != nil {
 		return nil, err
 	}
 	a.IPs = ips
@@ -170,6 +171,30 @@ func (d *DB) UpdateAgent(ctx context.Context, id int64, name, note string) (*Age
 		return nil, nil
 	}
 	return a, err
+}
+
+// SetAgentAutoUpdate flips the per-agent self-update switch.
+func (d *DB) SetAgentAutoUpdate(ctx context.Context, id int64, on bool) (bool, error) {
+	tag, err := d.Pool.Exec(ctx, `UPDATE agents SET auto_update = $2 WHERE id = $1`, id, on)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// BuildTarget maps an agent's reported OS/arch to a download target ("" when unsupported).
+func BuildTarget(os, arch string) string {
+	a := strings.ToLower(arch)
+	if a != "x86_64" && a != "amd64" {
+		return ""
+	}
+	switch strings.ToLower(os) {
+	case "linux":
+		return "linux-amd64"
+	case "windows":
+		return "windows-amd64"
+	}
+	return ""
 }
 
 // RevokeAgent invalidates an agent's token (its data is kept).

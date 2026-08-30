@@ -8,12 +8,14 @@ import (
 
 // AgentRetention controls how long endpoint-agent data is kept (settings["agent_retention"]).
 type AgentRetention struct {
-	ConnDays       int `json:"conn_days"`        // per-minute connection aggregates; 0 = keep forever
-	StaleAgentDays int `json:"stale_agent_days"` // delete agents (and their data) silent this long; 0 = never
+	ConnDays       int  `json:"conn_days"`        // per-minute connection aggregates; 0 = keep forever
+	StaleAgentDays int  `json:"stale_agent_days"` // delete agents (and their data) silent this long; 0 = never
+	AutoUpdate     bool `json:"auto_update"`      // let agents replace themselves with the image's newer build
 }
 
-// DefaultAgentRetention keeps two weeks of attribution data and never forgets agents.
-func DefaultAgentRetention() AgentRetention { return AgentRetention{ConnDays: 15} }
+// DefaultAgentRetention keeps two weeks of attribution data, never forgets agents, and lets
+// agents update themselves from the analyzer's build.
+func DefaultAgentRetention() AgentRetention { return AgentRetention{ConnDays: 15, AutoUpdate: true} }
 
 func (r AgentRetention) Validate() error {
 	if r.ConnDays < 0 || r.ConnDays > 3650 {

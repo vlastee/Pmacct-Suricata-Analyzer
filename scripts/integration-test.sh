@@ -27,9 +27,10 @@ for a in "$@"; do
 done
 
 log() { printf '\033[1;34m[it]\033[0m %s\n' "$*"; }
-CA_FILE=""
+CA_FILE=""; DIST_DIR=""
 cleanup() {
   [ -n "$CA_FILE" ] && rm -f "$CA_FILE"
+  [ -n "${DIST_DIR:-}" ] && rm -rf "$DIST_DIR"
   if [ "$KEEP" = 1 ]; then log "keeping containers ($PG, $APP)"; return; fi
   podman rm -f "$APP" >/dev/null 2>&1 || true
   podman rm -f "$PG" >/dev/null 2>&1 || true
@@ -59,6 +60,17 @@ done
 export TEST_DATABASE_URL="postgres://pmacct:pmacctpass@127.0.0.1:${PG_PORT}/pmacct?sslmode=disable"
 log "postgres ready on 127.0.0.1:$PG_PORT"
 
+# The agent updates itself from the version the image records; a changed agent without a
+# version bump would never roll out. Compare against the last commit that set the version.
+AGENT_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/agent/Cargo.toml" | head -1)"
+LAST_BUMP="$(git -C "$ROOT" log -1 --format=%H -- agent/Cargo.toml 2>/dev/null || true)"
+if [ -n "$LAST_BUMP" ]; then
+  PREV_VER="$(git -C "$ROOT" show "$LAST_BUMP:agent/Cargo.toml" 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+  if [ "$PREV_VER" = "$AGENT_VER" ] && ! git -C "$ROOT" diff --quiet "$LAST_BUMP" -- agent/ ':!agent/Cargo.toml' ':!agent/Cargo.lock' ':!agent/README.md' 2>/dev/null; then
+    echo "agent/ changed since version $AGENT_VER was set in $LAST_BUMP — bump [workspace.package] version in agent/Cargo.toml" >&2
+    exit 1
+  fi
+fi
 log "running Go unit tests"
 (cd "$ROOT/backend" && go test ./...)
 
@@ -76,8 +88,16 @@ log "building application image $IMAGE"
 # WITH_AGENT=0: the Rust cross-build takes minutes; the e2e uses the locally built agent instead.
 podman build -q --format docker --build-arg WITH_AGENT=0 -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT" >/dev/null
 
+# Agent distribution for the e2e: the locally built Linux agent + its version, mounted read-only
+# where the image would carry its own builds (WITH_AGENT=0 leaves that directory empty).
+DIST_DIR="$(mktemp -d)"; chmod 755 "$DIST_DIR"
+AGENT_BIN="$ROOT/agent/target/release/pmacct-agent"
+if [ -x "$AGENT_BIN" ]; then
+  install -m 0755 "$AGENT_BIN" "$DIST_DIR/pmacct-agent-linux-amd64"
+  sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/agent/Cargo.toml" | head -1 > "$DIST_DIR/VERSION"; chmod 644 "$DIST_DIR/VERSION"
+fi
 log "starting application container"
-podman run -d --name "$APP" --network "$NET" -p 127.0.0.1::8080 -p 127.0.0.1::8091 \
+podman run -d --name "$APP" --network "$NET" -p 127.0.0.1::8080 -p 127.0.0.1::8091 -v "$DIST_DIR:/app/agent:ro" \
   -e DATABASE_URL="postgres://pmacct:pmacctpass@${PG}:5432/pmacct?sslmode=disable" \
   -e LOCAL_NETWORKS="192.168.1.0/24" \
   -e ENRICH_ENABLED=false \
@@ -134,7 +154,7 @@ check "https rejected without the CA"         bash -c "! curl -sf '$TLS_BASE/hea
 check "https serves the API"                  bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/api/v1/tls/info' | grep -q '\"enabled\":true'"
 check "agent installer script served"        bash -c "json /api/v1/agent/install.sh | grep -q 'pmacct-agent installer'"
 check "agent builds endpoint answers"         bash -c "json /api/v1/agent/builds | grep -q '\"items\"'"
-check "missing agent build is a clean 404"    bash -c "curl -s -o /dev/null -w '%{http_code}' '$BASE/api/v1/agent/download/linux-amd64' | grep -q 404"
+check "missing agent build is a clean 404"    bash -c "curl -s -o /dev/null -w '%{http_code}' '$BASE/api/v1/agent/download/windows-amd64' | grep -q 404"
 # Endpoint agent: the real Rust binary enrolls over pinned TLS and heartbeats (skipped when not built).
 AGENT_BIN="$ROOT/agent/target/release/pmacct-agent"
 if [ -x "$AGENT_BIN" ]; then
@@ -146,6 +166,15 @@ if [ -x "$AGENT_BIN" ]; then
   check "agent enrolls over pinned TLS"         bash -c "'$AGENT_BIN' enroll --server '$TLS_BASE' --token '$ENROLL_TOKEN' --ca-pin '$CA_PIN' 2>&1 | grep -q 'enrolled as \"it-agent\"'"
   check "agent refuses plain http"              bash -c "! curl -sf -X POST -H 'Authorization: Bearer x' '$BASE/api/v1/agent/events' -d '{}' >/dev/null 2>&1"
   check "agent heartbeat accepted"              bash -c "'$AGENT_BIN' status 2>&1 | grep -q 'heartbeat   ok'"
+  # Self-update end to end: a temp copy of the agent replaces itself with the server's build
+  # (same version, so --force), keeping the previous binary; without --force it is up to date.
+  UPD_DIR="$(mktemp -d)"; install -m 0755 "$AGENT_BIN" "$UPD_DIR/pmacct-agent"
+  check "agent builds advertise the version"    bash -c "json /api/v1/agent/builds | grep -q '\"version\":\"$(cat "$DIST_DIR/VERSION")\"'"
+  check "agent update: already up to date"      bash -c "'$UPD_DIR/pmacct-agent' update 2>&1 | grep -q 'already up to date'"
+  check "agent update --force installs build"   bash -c "'$UPD_DIR/pmacct-agent' update --force 2>&1 | grep -q 'updated to'"
+  check "agent update kept previous binary"     bash -c "test -x '$UPD_DIR/pmacct-agent.old' && '$UPD_DIR/pmacct-agent' --version | grep -q pmacct-agent"
+  check "agent update installed exact bytes"    bash -c "test \"\$(sha256sum '$UPD_DIR/pmacct-agent' | cut -d' ' -f1)\" = \"\$(sha256sum '$DIST_DIR/pmacct-agent-linux-amd64' | cut -d' ' -f1)\""
+  rm -rf "$UPD_DIR"
   check "agent listed as online"                bash -c "json /api/v1/agents | grep -q '\"name\":\"it-agent\"'"
   check "agent snapshot runs"                   bash -c "'$AGENT_BIN' snapshot | head -1 | grep -q 'capture=poll'"
   rm -rf "$AGENT_DIR"

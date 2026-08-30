@@ -28,6 +28,7 @@ pmacct-agent enroll --server https://10.0.0.210:8091 --token <enrollment token> 
 pmacct-agent install      # register + start the service (root / administrator)
 pmacct-agent status       # config, pinned CA, one heartbeat
 pmacct-agent uninstall
+pmacct-agent update [--force]   # install the server's newer build now (auto-update does this itself)
 pmacct-agent snapshot --capture poll                  # current connections with programs
 sudo pmacct-agent snapshot --capture ebpf --seconds 10  # live events from the eBPF backend
 ```
@@ -47,6 +48,14 @@ default — `--spool-max-mb` / `spool_max_mb` — oldest dropped first, oversize
 the disk you prefer with `enroll --spool-dir DIR` (the installers pass `--spool-dir` /
 `-SpoolDir`), `spool_dir` in `agent.toml`, or `PMACCT_AGENT_SPOOL`; the systemd unit's
 `ReadWritePaths` follows it. `pmacct-agent status` shows the path, batch count and size.
+
+## Updates
+
+Every events ack carries the server's build for this platform. When the server's version is
+newer and both the server policy and `auto_update` in `agent.toml` allow it, the agent downloads
+the binary over the pinned connection, verifies the SHA-256, runs `--version` on it, renames the
+running binary to `.old`, moves the new one in and restarts the service (systemd / SCM), after a
+random delay of up to two minutes. Bump `[workspace.package] version` for every agent change.
 
 ## Security
 

@@ -25,11 +25,22 @@ var agentTargets = map[string]string{
 }
 
 type agentBuild struct {
-	Target string    `json:"target"`
-	File   string    `json:"file"`
-	Size   int64     `json:"size"`
-	SHA256 string    `json:"sha256"`
-	Built  time.Time `json:"built"`
+	Target  string    `json:"target"`
+	File    string    `json:"file"`
+	Version string    `json:"version"`
+	Size    int64     `json:"size"`
+	SHA256  string    `json:"sha256"`
+	Built   time.Time `json:"built"`
+}
+
+// distVersion is the agent version recorded next to the binaries (VERSION, written by the image
+// build); "" when unknown, in which case agents never consider the build newer.
+func (s *Server) distVersion() string {
+	raw, err := os.ReadFile(filepath.Join(s.distDir(), "VERSION"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 var (
@@ -58,6 +69,7 @@ func (s *Server) buildInfo(target string) (agentBuild, bool) {
 	buildCacheMu.Lock()
 	defer buildCacheMu.Unlock()
 	if b, ok := buildCache[path]; ok && b.Size == st.Size() && b.Built.Equal(st.ModTime()) {
+		b.Version = s.distVersion()
 		return b, true
 	}
 	raw, err := os.ReadFile(path)
@@ -65,7 +77,7 @@ func (s *Server) buildInfo(target string) (agentBuild, bool) {
 		return agentBuild{}, false
 	}
 	sum := sha256.Sum256(raw)
-	b := agentBuild{Target: target, File: file, Size: st.Size(), SHA256: hex.EncodeToString(sum[:]), Built: st.ModTime()}
+	b := agentBuild{Target: target, File: file, Version: s.distVersion(), Size: st.Size(), SHA256: hex.EncodeToString(sum[:]), Built: st.ModTime()}
 	buildCache[path] = b
 	return b, true
 }

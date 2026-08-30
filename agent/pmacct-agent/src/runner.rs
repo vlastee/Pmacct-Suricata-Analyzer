@@ -80,6 +80,7 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut poll = tokio::time::interval(Duration::from_secs(cfg.interval_secs.max(1)));
     let mut send = tokio::time::interval(Duration::from_secs(cfg.send_every_secs.clamp(5, 600)));
     let mut last_upload = std::time::Instant::now();
+    let mut last_update_try: Option<std::time::Instant> = None;
     let capture_name = capture.name().to_string();
     info!("capture={} interval={}s upload every {}s spool={} ({} queued, cap {} MiB)", capture_name, cfg.interval_secs, cfg.send_every_secs, spool.dir().display(), spool.len(), cfg.spool_max_mb);
 
@@ -108,6 +109,14 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
                         Ok(ack) => {
                             last_upload = std::time::Instant::now();
                             if ack.accepted > 0 || ack.rejected > 0 { info!("uploaded {} accepted, {} rejected", ack.accepted, ack.rejected); }
+                            if let Some(build) = ack.build.as_ref() {
+                                if last_update_try.map(|t| t.elapsed() > Duration::from_secs(3600)).unwrap_or(true) && crate::update::wanted(build, agent_core::VERSION) {
+                                    last_update_try = Some(std::time::Instant::now());
+                                    if crate::update::maybe_auto(&client, build, ack.auto_update, cfg.auto_update).await {
+                                        return Ok(()); // the service manager restarts the new binary
+                                    }
+                                }
+                            }
                             // Drain the spool while the server answers.
                             let mut flushed = 0;
                             while let Ok(Some((path, old))) = spool.peek() {

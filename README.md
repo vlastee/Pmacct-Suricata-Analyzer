@@ -328,6 +328,15 @@ case the page says no binary is available and you copy a `make agent` build by h
 served from `AGENT_DIST_DIR` (default `/app/agent`; `make run` uses `agent/dist`, filled by
 `make agent-dist`).
 
+**Updates.** The image records the agent version it built; agents learn about it on every
+heartbeat and, when **auto-update agents** (Agents → ⚙ retention, default on) and the agent's own
+switch allow it, download the newer build over the pinned connection, verify the checksum, run
+its self-test, swap it in (previous binary kept as `.old`) and restart — staggered by up to two
+minutes. `pmacct-agent update` does the same by hand (`--force` reinstalls), `enroll
+--no-auto-update` vetoes it locally. The Agents page shows *→ vX auto/manual* per agent.
+**Bump `version` in `agent/Cargo.toml` whenever the agent changes** — the integration script
+fails if `agent/` changed without a bump, because nothing would roll out otherwise.
+
 What it reports: per minute, per (local address, program, user, destination, port, protocol) a
 count — no payloads, no command lines unless `--send-cmdline`. Capture backends (`--capture`,
 default `auto`):

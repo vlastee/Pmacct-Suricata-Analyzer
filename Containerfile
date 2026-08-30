@@ -28,7 +28,8 @@ RUN mkdir -p /out && if [ "$WITH_AGENT" = "1" ]; then \
       cargo build --release --target x86_64-unknown-linux-musl \
       && cargo build --release --target x86_64-pc-windows-gnu \
       && cp target/x86_64-unknown-linux-musl/release/pmacct-agent /out/pmacct-agent-linux-amd64 \
-      && cp target/x86_64-pc-windows-gnu/release/pmacct-agent.exe /out/pmacct-agent-windows-amd64.exe; fi
+      && cp target/x86_64-pc-windows-gnu/release/pmacct-agent.exe /out/pmacct-agent-windows-amd64.exe \
+      && sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1 > /out/VERSION; fi
 
 # ---- runtime ----
 FROM docker.io/library/alpine:3.21

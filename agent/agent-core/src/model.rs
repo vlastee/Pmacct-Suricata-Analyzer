@@ -78,10 +78,26 @@ pub struct EventsBatch {
     pub conns: Vec<ConnRecord>,
 }
 
+/// The server's current agent build for this platform (in the events ack, for self-update).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct BuildInfo {
+    pub target: String,
+    pub version: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub size: u64,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct EventsAck {
     pub accepted: u32,
     pub rejected: u32,
+    /// Newest build the server can hand out for this agent's target, when it has one.
+    #[serde(default)]
+    pub build: Option<BuildInfo>,
+    /// Server policy (global toggle AND this agent's opt-in).
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

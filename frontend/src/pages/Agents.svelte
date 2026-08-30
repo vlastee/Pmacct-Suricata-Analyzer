@@ -98,6 +98,13 @@
     if (!confirm(`Delete "${a.name}" and everything it reported?`)) return
     try { await api.deleteAgent(a.id); await load() } catch (err: any) { msg = err.message }
   }
+  // Self-update: newest build per target vs what each agent reports.
+  const cmp = (a: string, b: string) => { const x = a.split(/[.\-+]/).map(n => +n || 0), y = b.split(/[.\-+]/).map(n => +n || 0); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] ?? 0) - (y[i] ?? 0); if (d) return d } return 0 }
+  function targetOf(a: Agent) { const arch = a.arch.toLowerCase(); if (arch !== 'x86_64' && arch !== 'amd64') return ''; return a.os.toLowerCase() === 'windows' ? 'windows-amd64' : a.os.toLowerCase() === 'linux' ? 'linux-amd64' : '' }
+  function newerBuild(a: Agent): AgentBuild | null { const b = builds.find(x => x.target === targetOf(a)); return b && b.version && cmp(b.version, a.version) > 0 ? b : null }
+  async function toggleAutoUpdate(a: Agent) {
+    try { await api.setAgentAutoUpdate(a.id, !a.auto_update); await load() } catch (err: any) { msg = err.message }
+  }
   async function save(a: Agent) {
     try { await api.updateAgent(a.id, editName, editNote); editing = null; await load() } catch (err: any) { msg = err.message }
   }
@@ -143,7 +150,7 @@
   </form>
   <div class="small muted" style="margin-top:.4rem">
     {#if build}
-      binary in this image: <span class="mono">{build.file}</span> · {fmtBytes(build.size)} · built {fmtAgo(build.built)} · sha256 <span class="mono">{build.sha256.slice(0, 16)}…</span>
+      binary in this image: <span class="mono">{build.file}</span>{#if build.version} · <b>v{build.version}</b>{/if} · {fmtBytes(build.size)} · built {fmtAgo(build.built)} · sha256 <span class="mono">{build.sha256.slice(0, 16)}…</span>
     {:else}
       <span class="badge warning">no {os} agent binary in this image</span> — rebuild the analyzer image with <span class="mono">WITH_AGENT=1</span> (default) so installers can download it, or copy a locally built binary by hand.
     {/if}
@@ -176,6 +183,7 @@
         <label class="row" style="gap:.3rem">keep connection data for <input type="number" min="0" max="3650" bind:value={retention.conn_days} style="width:4.5rem" /> days</label>
         <label class="row" style="gap:.3rem">forget agents silent for <input type="number" min="0" max="3650" bind:value={retention.stale_agent_days} style="width:4.5rem" /> days</label>
         <span class="muted">(0 = forever / never)</span>
+        <label class="row" style="gap:.3rem" title="Agents replace themselves with this image's build when it is newer (checksum-verified, self-tested, previous binary kept as .old). Per-agent switch in the table."><input type="checkbox" bind:checked={retention.auto_update} /> auto-update agents</label>
         <button class="primary small" onclick={saveRetention}>Save</button>
         {#if retMsg}<span class="muted">{retMsg}</span>{/if}
       {:else}<span class="muted">{retMsg || 'loading…'}</span>{/if}
@@ -199,7 +207,12 @@
           <td class="mono small">{a.hostname}</td>
           <td>{#each a.ips as ip (ip)}<div><IPLabel {ip} local={true} /></div>{/each}</td>
           <td class="small">{a.os}/{a.arch}</td>
-          <td class="small mono">{a.version}</td>
+          <td class="small">
+            <span class="mono">{a.version}</span>
+            {#if !a.revoked_at && newerBuild(a)}
+              <div><span class="badge warning" title="the image carries v{newerBuild(a)?.version}; {a.auto_update ? 'the agent installs it on its next heartbeat' : 'auto-update is off for this agent: run `pmacct-agent update` on the machine'}">→ v{newerBuild(a)?.version} {a.auto_update ? 'auto' : 'manual'}</span></div>
+            {/if}
+          </td>
           <td class="small">{a.capture || '–'}</td>
           <td class="num">{fmtNum(a.events_total)}</td>
           <td class="num">{a.last_batch}</td>
@@ -207,6 +220,7 @@
           <td class="small" title={a.last_seen ? fmtTime(a.last_seen) : ''}>{a.last_seen ? fmtAgo(a.last_seen) : 'never'}{#if a.last_ip} <span class="muted mono">from {a.last_ip}</span>{/if}</td>
           <td class="num actions" onclick={(e) => e.stopPropagation()}>
             <button class="small" onclick={() => { editing = a.id; editName = a.name; editNote = a.note }}>Edit</button>
+            {#if !a.revoked_at}<button class="small" onclick={() => toggleAutoUpdate(a)} title={a.auto_update ? 'self-update allowed for this agent' : 'self-update disabled for this agent'}>{a.auto_update ? 'auto-update: on' : 'auto-update: off'}</button>{/if}
             {#if !a.revoked_at}<button class="small" onclick={() => revoke(a)}>Revoke</button>{/if}
             <button class="small" onclick={() => del(a)}>Delete</button>
           </td>

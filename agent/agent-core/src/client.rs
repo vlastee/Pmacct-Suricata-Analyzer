@@ -67,9 +67,34 @@ pub struct Client {
     http: reqwest::Client,
 }
 
+/// Download target for this build of the agent.
+pub const TARGET: &str = if cfg!(windows) { "windows-amd64" } else { "linux-amd64" };
+
 impl Client {
     pub fn new(server: &str, token: &str, ca_pem: Option<&str>) -> Result<Self> {
         Ok(Self { base: base(server), token: token.to_string(), http: builder(ca_pem, false)?.build()? })
+    }
+
+    /// The server's available builds (public endpoint, but fetched over the pinned connection).
+    pub async fn builds(&self) -> Result<Vec<crate::model::BuildInfo>> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            items: Vec<crate::model::BuildInfo>,
+        }
+        let resp = self.http.get(format!("{}/api/v1/agent/builds", self.base)).send().await.context("builds")?;
+        if !resp.status().is_success() {
+            return Err(err_body(resp).await);
+        }
+        Ok(resp.json::<Resp>().await?.items)
+    }
+
+    /// Download a build; the caller verifies the checksum.
+    pub async fn download(&self, target: &str) -> Result<Vec<u8>> {
+        let resp = self.http.get(format!("{}/api/v1/agent/download/{target}", self.base)).send().await.context("download")?;
+        if !resp.status().is_success() {
+            return Err(err_body(resp).await);
+        }
+        Ok(resp.bytes().await?.to_vec())
     }
 
     /// Upload one batch (gzip-compressed JSON).
