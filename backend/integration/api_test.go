@@ -736,6 +736,17 @@ func TestAgents(t *testing.T) {
 	if v := procs.Via["8.8.8.8"]; len(v) != 1 || v[0] != "chrome.exe (petro)" {
 		t.Fatalf("via map: %+v", procs.Via)
 	}
+	// Per-agent activity for the window.
+	var act db.AgentActivity
+	if code := e.get(t, fmt.Sprintf("/api/v1/agents/%d/activity?since=1h", en.AgentID), &act); code != 200 {
+		t.Fatalf("activity: http %d", code)
+	}
+	if act.Rows != 2 || act.Conns != 8 || act.Programs != 2 || act.Peers != 2 || len(act.ByProgram) != 2 || act.ByProgram[0].Name != "chrome.exe" || len(act.Timeline) != 1 || act.Timeline[0].Conns != 8 || len(act.Recent) != 2 {
+		t.Fatalf("activity: %+v", act)
+	}
+	if len(act.Destinations) != 2 || act.Destinations[0].Dst != "8.8.8.8" || act.Destinations[0].Conns != 7 || len(act.Destinations[0].Programs) != 1 || act.Destinations[0].Programs[0] != "chrome.exe" {
+		t.Fatalf("destinations: %+v", act.Destinations)
+	}
 	// A rule finding host→peer gets "via" from the agent data (details + notification text).
 	rule := map[string]any{"name": "agent_rule", "title": "agent via", "kind": "sql", "severity": "warning", "interval": "1m", "window": "1h",
 		"sql": "SELECT '192.168.1.10' AS host, '8.8.8.8' AS peer, 443 AS port"}

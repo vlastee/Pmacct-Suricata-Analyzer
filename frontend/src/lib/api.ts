@@ -36,6 +36,13 @@ export interface Agent {
   enrolled_at: string; last_seen: string | null; last_ip: string | null; events_total: number; last_batch: number; dropped: number
   revoked_at: string | null; note: string
 }
+export interface AgentActivity {
+  rows: number; conns: number; programs: number; peers: number; first: string | null; last: string | null; bucket_seconds: number
+  by_program: ProcessStat[]
+  destinations: { dst: string; dst_port: number; proto: string; conns: number; programs: string[]; last_seen: string }[]
+  timeline: { at: string; conns: number; programs: number }[]
+  recent: { minute: string; src: string; proto: string; dst: string; dst_port: number; name: string; user: string; count: number }[]
+}
 export interface AgentRetention { conn_days: number; stale_agent_days: number }
 export interface AgentBuild { target: string; file: string; size: number; sha256: string; built: string }
 export interface EnrollToken { enroll_token: string; expires_at: string; server_url: string; tls_required: boolean; ca_fingerprint_sha256?: string; ca_spki_sha256?: string }
@@ -186,6 +193,7 @@ export const api = {
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
   agents: () => request<{ items: Agent[]; tls_required: boolean }>('/api/v1/agents'),
   agentBuilds: () => request<{ items: AgentBuild[]; dir: string }>('/api/v1/agent/builds'),
+  agentActivity: (id: number, r: Range) => request<AgentActivity>(`/api/v1/agents/${id}/activity${qs(r)}`),
   agentSettings: () => request<AgentRetention>('/api/v1/agents/settings'),
   setAgentSettings: (r: AgentRetention) =>
     request<{ settings: AgentRetention; deleted_rows: number; deleted_agents: number }>('/api/v1/agents/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(r) }),

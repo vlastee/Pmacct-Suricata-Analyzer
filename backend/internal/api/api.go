@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/agents/settings", s.adminOnly(s.setAgentSettings))
 	mux.HandleFunc("POST /api/v1/agents/enroll-tokens", s.adminOnly(s.createEnrollToken))
 	mux.HandleFunc("PUT /api/v1/agents/{id}", s.adminOnly(s.updateAgent))
+	mux.HandleFunc("GET /api/v1/agents/{id}/activity", s.adminOnly(s.agentActivity))
 	mux.HandleFunc("POST /api/v1/agents/{id}/{action}", s.adminOnly(s.agentAdminAction))
 	mux.HandleFunc("DELETE /api/v1/agents/{id}", s.adminOnly(s.deleteAgent))
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/processes", s.hostProcesses)

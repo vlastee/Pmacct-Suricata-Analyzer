@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { api, type Agent, type AgentBuild, type AgentRetention, type EnrollToken } from '../lib/api'
-  import { fmtAgo, fmtTime, fmtNum, fmtBytes } from '../lib/format'
+  import { api, type Agent, type AgentActivity, type AgentBuild, type AgentRetention, type EnrollToken } from '../lib/api'
+  import { fmtAgo, fmtTime, fmtNum, fmtBytes, fmtCompact } from '../lib/format'
+  import { currentRange, router } from '../lib/router.svelte'
   import Loading from '../lib/components/Loading.svelte'
   import IPLabel from '../lib/components/IPLabel.svelte'
 
@@ -14,6 +15,18 @@
   let editName = $state('')
   let editNote = $state('')
 
+  // per-agent activity (click a row)
+  let open = $state<number | null>(null)
+  let activity = $state<AgentActivity | null>(null)
+  let actMsg = $state('')
+  let actTab = $state<'programs' | 'destinations' | 'recent'>('programs')
+  async function loadActivity(id: number) {
+    activity = null; actMsg = 'loading…'
+    try { activity = await api.agentActivity(id, currentRange()); actMsg = '' } catch (e: any) { actMsg = e.message }
+  }
+  $effect(() => { void router.route.query.toString(); void reloadKey; if (open !== null) loadActivity(open) })
+  function toggle(a: Agent) { open = open === a.id ? null : a.id }
+  let peak = $derived(activity ? Math.max(1, ...activity.timeline.map(b => b.conns)) : 1)
   // retention
   let showRetention = $state(false)
   let retention = $state<AgentRetention | null>(null)
@@ -153,12 +166,13 @@
     <thead><tr><th>Name</th><th>Host</th><th>Addresses</th><th>OS</th><th>Version</th><th>Capture</th><th class="num">Events</th><th class="num">Last batch</th><th class="num">Dropped</th><th>Last seen</th><th></th></tr></thead>
     <tbody>
       {#each items as a (a.id)}
-        <tr class:off={!!a.revoked_at}>
+        <tr class:off={!!a.revoked_at} class:sel={open === a.id} style="cursor:pointer" onclick={() => toggle(a)} title="Click to see what this agent reported in the selected time range">
           <td>
             {#if editing === a.id}
               <input bind:value={editName} size="14" /> <input bind:value={editNote} placeholder="note" size="18" />
               <button class="small" onclick={() => save(a)}>Save</button><button class="small" onclick={() => (editing = null)}>Cancel</button>
             {:else}
+              <span class="muted">{open === a.id ? '▾' : '▸'}</span>
               <span class="badge {online(a) ? 'good' : a.revoked_at ? '' : 'warning'}" title={a.revoked_at ? 'revoked ' + fmtTime(a.revoked_at) : online(a) ? 'reporting' : 'silent for more than 5 minutes'}>{a.revoked_at ? 'revoked' : online(a) ? 'online' : 'silent'}</span>
               <strong>{a.name}</strong>{#if a.note} <span class="small muted">— {a.note}</span>{/if}
             {/if}
@@ -172,12 +186,77 @@
           <td class="num">{a.last_batch}</td>
           <td class="num" class:warn={a.dropped > 0}>{fmtNum(a.dropped)}</td>
           <td class="small" title={a.last_seen ? fmtTime(a.last_seen) : ''}>{a.last_seen ? fmtAgo(a.last_seen) : 'never'}{#if a.last_ip} <span class="muted mono">from {a.last_ip}</span>{/if}</td>
-          <td class="num actions">
+          <td class="num actions" onclick={(e) => e.stopPropagation()}>
             <button class="small" onclick={() => { editing = a.id; editName = a.name; editNote = a.note }}>Edit</button>
             {#if !a.revoked_at}<button class="small" onclick={() => revoke(a)}>Revoke</button>{/if}
             <button class="small" onclick={() => del(a)}>Delete</button>
           </td>
         </tr>
+        {#if open === a.id}
+          <tr class="detail"><td colspan="11">
+            {#if activity}
+              <div class="row small" style="gap:1rem; flex-wrap:wrap; margin-bottom:.5rem">
+                <span><b>{fmtCompact(activity.conns)}</b> connections</span>
+                <span><b>{activity.programs}</b> programs</span>
+                <span><b>{activity.peers}</b> destinations</span>
+                <span class="muted">{activity.rows} aggregates{#if activity.first} · {fmtTime(activity.first)} → {fmtTime(activity.last)}{/if} · selected range</span>
+                <span class="spacer"></span>
+                {#each ['programs', 'destinations', 'recent'] as tab}
+                  <button class="small" class:primary={actTab === tab} onclick={() => (actTab = tab as any)}>{tab}</button>
+                {/each}
+              </div>
+              {#if activity.timeline.length > 1}
+                <div class="bars" title="connections per {activity.bucket_seconds === 60 ? 'minute' : 'hour'}">
+                  {#each activity.timeline as b (b.at)}
+                    <div class="bar" style="height:{Math.max(2, Math.round(40 * b.conns / peak))}px" title="{fmtTime(b.at)} · {b.conns} connections · {b.programs} programs"></div>
+                  {/each}
+                </div>
+              {/if}
+              {#if activity.rows === 0}
+                <div class="small muted">Nothing reported in this time range{#if a.last_seen} — last heartbeat {fmtAgo(a.last_seen)}{/if}.</div>
+              {:else if actTab === 'programs'}
+                <div class="overflow"><table>
+                  <thead><tr><th>Program</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th class="num">Ports</th><th>Top destinations</th><th>Last</th></tr></thead>
+                  <tbody>
+                    {#each activity.by_program as p (p.exe + p.user)}
+                      <tr>
+                        <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe}</strong><div class="small muted mono" style="max-width:360px; overflow:hidden; text-overflow:ellipsis">{p.exe}</div></td>
+                        <td class="small">{p.user || '–'}</td><td class="num">{fmtCompact(p.conns)}</td><td class="num">{p.bytes ? fmtBytes(p.bytes) : '–'}</td>
+                        <td class="num">{p.peers}</td><td class="num">{p.ports}</td><td class="small mono">{p.top_peers.join(', ')}</td>
+                        <td class="small" title={fmtTime(p.last_seen)}>{fmtAgo(p.last_seen)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table></div>
+              {:else if actTab === 'destinations'}
+                <div class="overflow"><table>
+                  <thead><tr><th>Destination</th><th class="num">Port</th><th>Proto</th><th class="num">Conns</th><th>Programs</th><th>Last</th></tr></thead>
+                  <tbody>
+                    {#each activity.destinations as d (d.dst + ':' + d.dst_port + d.proto)}
+                      <tr>
+                        <td><IPLabel ip={d.dst} /></td><td class="num mono">{d.dst_port}</td><td class="small">{d.proto}</td>
+                        <td class="num">{fmtCompact(d.conns)}</td><td class="small">{d.programs.join(', ')}</td>
+                        <td class="small" title={fmtTime(d.last_seen)}>{fmtAgo(d.last_seen)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table></div>
+              {:else}
+                <div class="overflow"><table>
+                  <thead><tr><th>Minute</th><th>From</th><th>Program</th><th>User</th><th>Destination</th><th class="num">Port</th><th>Proto</th><th class="num">Conns</th></tr></thead>
+                  <tbody>
+                    {#each activity.recent as r, i (i)}
+                      <tr>
+                        <td class="small">{fmtTime(r.minute)}</td><td class="mono small">{r.src}</td><td>{r.name}</td><td class="small">{r.user || '–'}</td>
+                        <td><IPLabel ip={r.dst} /></td><td class="num mono">{r.dst_port}</td><td class="small">{r.proto}</td><td class="num">{r.count}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table></div>
+              {/if}
+            {:else}<div class="small muted">{actMsg || 'loading…'}</div>{/if}
+          </td></tr>
+        {/if}
       {:else}<tr><td colspan="11" class="empty">No agents enrolled yet.</td></tr>{/each}
     </tbody>
   </table>
@@ -186,6 +265,10 @@
 <style>
   .cmd { white-space: pre-wrap; word-break: break-all; background: var(--surface-2); padding: .5rem; border-radius: var(--radius); font-size: .8rem; margin: .4rem 0; }
   tr.off { opacity: .6; }
+  tr.sel td { background: var(--surface-2); }
+  tr.detail td { background: var(--surface-2); }
+  .bars { display: flex; align-items: flex-end; gap: 1px; height: 42px; margin: .2rem 0 .6rem; }
+  .bar { flex: 1 1 0; min-width: 2px; background: rgba(57,135,229,.55); border-radius: 1px 1px 0 0; }
   .warn { color: #f0c56b; }
   .actions button { margin-left: .25rem; }
 </style>

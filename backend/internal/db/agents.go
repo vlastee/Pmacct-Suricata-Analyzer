@@ -343,3 +343,131 @@ func (d *DB) PruneEndpointConns(ctx context.Context, keep time.Duration) (int64,
 	}
 	return tag.RowsAffected(), nil
 }
+
+// AgentActivity is what one agent reported in a window.
+type AgentActivity struct {
+	Rows         int64            `json:"rows"`
+	Conns        int64            `json:"conns"`
+	Programs     int64            `json:"programs"`
+	Peers        int64            `json:"peers"`
+	First        *time.Time       `json:"first"`
+	Last         *time.Time       `json:"last"`
+	ByProgram    []ProcessStat    `json:"by_program"`
+	Destinations []AgentDest      `json:"destinations"`
+	Timeline     []AgentBucket    `json:"timeline"`
+	Recent       []AgentRecentRow `json:"recent"`
+	BucketSecs   int              `json:"bucket_seconds"`
+}
+
+type AgentDest struct {
+	Dst      string    `json:"dst"`
+	DstPort  int       `json:"dst_port"`
+	Proto    string    `json:"proto"`
+	Conns    int64     `json:"conns"`
+	Programs []string  `json:"programs"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+type AgentBucket struct {
+	At       time.Time `json:"at"`
+	Conns    int64     `json:"conns"`
+	Programs int64     `json:"programs"`
+}
+
+type AgentRecentRow struct {
+	Minute  time.Time `json:"minute"`
+	Host    string    `json:"src"`
+	Proto   string    `json:"proto"`
+	Dst     string    `json:"dst"`
+	DstPort int       `json:"dst_port"`
+	Name    string    `json:"name"`
+	User    string    `json:"user"`
+	Count   int       `json:"count"`
+}
+
+// AgentActivityFor summarises one agent's reports in the window.
+func (d *DB) AgentActivityFor(ctx context.Context, agentID int64, w Window) (*AgentActivity, error) {
+	a := &AgentActivity{ByProgram: []ProcessStat{}, Destinations: []AgentDest{}, Timeline: []AgentBucket{}, Recent: []AgentRecentRow{}}
+	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(count), 0), COUNT(DISTINCT exe), COUNT(DISTINCT dst), MIN(minute), MAX(minute)
+FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3`, agentID, w.Since, w.Until).Scan(&a.Rows, &a.Conns, &a.Programs, &a.Peers, &a.First, &a.Last); err != nil {
+		return nil, err
+	}
+	rows, err := d.Pool.Query(ctx, `
+WITH c AS (
+  SELECT exe, name, "user", MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
+         COUNT(DISTINCT dst) AS peers, COUNT(DISTINCT dst_port) AS ports, MAX(minute) AS last_seen
+  FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY exe, name, "user")
+SELECT c.*, (SELECT ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e
+             WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user"
+             GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)) AS top_peers
+FROM c ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var p ProcessStat
+		if err := rows.Scan(&p.Exe, &p.Name, &p.User, &p.SHA256, &p.Conns, &p.Bytes, &p.Peers, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if p.TopPeers == nil {
+			p.TopPeers = []string{}
+		}
+		a.ByProgram = append(a.ByProgram, p)
+	}
+	rows.Close()
+	rows, err = d.Pool.Query(ctx, `
+SELECT host(dst), dst_port, proto, SUM(count) AS conns, MAX(minute),
+       (ARRAY(SELECT name FROM endpoint_conns e WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.dst = c.dst AND e.dst_port = c.dst_port AND e.proto = c.proto
+              GROUP BY name ORDER BY SUM(count) DESC LIMIT 3))
+FROM endpoint_conns c WHERE agent_id = $1 AND minute >= $2 AND minute < $3
+GROUP BY dst, dst_port, proto ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var x AgentDest
+		if err := rows.Scan(&x.Dst, &x.DstPort, &x.Proto, &x.Conns, &x.LastSeen, &x.Programs); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if x.Programs == nil {
+			x.Programs = []string{}
+		}
+		a.Destinations = append(a.Destinations, x)
+	}
+	rows.Close()
+	// Timeline: per minute up to 6 h, then per hour.
+	a.BucketSecs = 60
+	if w.Until.Sub(w.Since) > 6*time.Hour {
+		a.BucketSecs = 3600
+	}
+	rows, err = d.Pool.Query(ctx, `SELECT to_timestamp(floor(extract(epoch FROM minute) / $4) * $4), SUM(count), COUNT(DISTINCT exe)
+FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY 1 ORDER BY 1`, agentID, w.Since, w.Until, a.BucketSecs)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var b AgentBucket
+		if err := rows.Scan(&b.At, &b.Conns, &b.Programs); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		a.Timeline = append(a.Timeline, b)
+	}
+	rows.Close()
+	rows, err = d.Pool.Query(ctx, `SELECT minute, host(host), proto, host(dst), dst_port, name, "user", count
+FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 ORDER BY minute DESC, count DESC LIMIT 300`, agentID, w.Since, w.Until)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r AgentRecentRow
+		if err := rows.Scan(&r.Minute, &r.Host, &r.Proto, &r.Dst, &r.DstPort, &r.Name, &r.User, &r.Count); err != nil {
+			return nil, err
+		}
+		a.Recent = append(a.Recent, r)
+	}
+	return a, rows.Err()
+}
