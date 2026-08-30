@@ -1,11 +1,29 @@
-# pmacct-agent installer (Windows). The Agents page generates, for an administrator PowerShell:
-#   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-#   iex (iwr -UseBasicParsing https://SERVER/api/v1/agent/install.ps1).Content
+# pmacct-agent installer (Windows). The Agents page generates, for an administrator PowerShell
+# (Windows PowerShell 5.1 or PowerShell 7), a one-liner that fetches this script without
+# certificate validation, dot-sources it and calls:
 #   Install-PmacctAgent -Server https://SERVER -Token ENROLL_TOKEN -CaFingerprint AA:BB:… -CaPin base64…
 # Trust model: the CA is fetched without validation, checked against -CaFingerprint (given
 # out-of-band by the UI) and then imported into the machine's trusted roots — so downloads are
 # validated normally, and browsers on this machine trust the analyzer's HTTPS too. The binary is
 # checksum-verified and the agent re-verifies -CaPin at enrollment.
+#
+# Skipping validation must not use a PowerShell script block as ServerCertificateValidationCallback:
+# on Windows PowerShell 5.1 .NET invokes it on a thread without a runspace, the callback throws and
+# the request dies with "The underlying connection was closed: An unexpected error occurred on a
+# send". A compiled (C#) callback works there; PowerShell 7 uses -SkipCertificateCheck instead.
+function Invoke-PmacctFetch {
+    param([Parameter(Mandatory = $true)][string]$Uri, [string]$OutFile = "", [switch]$Insecure)
+    $p = @{ UseBasicParsing = $true; Uri = $Uri }
+    if ($OutFile) { $p.OutFile = $OutFile }
+    if (-not $Insecure) { return Invoke-WebRequest @p }
+    if ($PSVersionTable.PSVersion.Major -ge 6) { $p.SkipCertificateCheck = $true; return Invoke-WebRequest @p }
+    if (-not ('PmacctTrustAll' -as [type])) {
+        Add-Type -TypeDefinition 'using System.Net.Security; public static class PmacctTrustAll { public static RemoteCertificateValidationCallback Callback() { return delegate { return true; }; } }'
+    }
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = [PmacctTrustAll]::Callback()
+    try { return Invoke-WebRequest @p } finally { [Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
+}
+
 function Install-PmacctAgent {
     param(
         [Parameter(Mandatory = $true)][string]$Server,
@@ -18,7 +36,8 @@ function Install-PmacctAgent {
         [int]$SpoolMaxMb = 0
     )
     $ErrorActionPreference = "Stop"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # Make sure TLS 1.2 is enabled on older .NET Framework defaults (3072 = Tls12), keeping newer ones.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) { throw "run this from an administrator PowerShell" }
     $Server = $Server.TrimEnd('/')
@@ -26,8 +45,7 @@ function Install-PmacctAgent {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     if ($Server.StartsWith("https://")) {
         $caPath = Join-Path $dir "ca.pem"
-        [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-        try { Invoke-WebRequest -UseBasicParsing -Uri "$Server/api/v1/tls/ca" -OutFile $caPath } finally { [Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
+        Invoke-PmacctFetch -Uri "$Server/api/v1/tls/ca" -OutFile $caPath -Insecure
         $ca = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($caPath)
         $got = ([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($ca.RawData))).Replace("-", ":")
         if ($CaFingerprint) {
@@ -39,14 +57,18 @@ function Install-PmacctAgent {
         $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "LocalMachine")
         $store.Open("ReadWrite"); $store.Add($ca); $store.Close()
         Write-Host "CA imported into Trusted Root Certification Authorities"
+        # From here on every request must be validated against that CA: drop the trust-all
+        # callback the bootstrap one-liner may have left behind and any connection it opened.
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $null
+        try { [Net.ServicePointManager]::FindServicePoint([Uri]$Server).CloseConnectionGroup("") | Out-Null } catch {}
     } else {
         Write-Warning "plain http - the enrollment token crosses the network in clear"
     }
     $exe = Join-Path $dir "pmacct-agent.exe"
     $tmp = Join-Path $dir "pmacct-agent.download"
     Write-Host "downloading pmacct-agent (windows-amd64)..."
-    Invoke-WebRequest -UseBasicParsing -Uri "$Server/api/v1/agent/download/windows-amd64" -OutFile $tmp
-    $want = ((Invoke-WebRequest -UseBasicParsing -Uri "$Server/api/v1/agent/download/windows-amd64.sha256").Content -split ' ')[0].Trim().ToLower()
+    Invoke-PmacctFetch -Uri "$Server/api/v1/agent/download/windows-amd64" -OutFile $tmp
+    $want = ((Invoke-PmacctFetch -Uri "$Server/api/v1/agent/download/windows-amd64.sha256").Content -split ' ')[0].Trim().ToLower()
     $have = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLower()
     if ($have -ne $want) { Remove-Item $tmp -Force; throw "checksum mismatch - aborting" }
     $svc = Get-Service -Name pmacct-agent -ErrorAction SilentlyContinue

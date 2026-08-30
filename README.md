@@ -305,8 +305,11 @@ builds Linux and Windows).
    # Linux, as root
    curl -sk https://10.0.0.210:8091/api/v1/agent/install.sh | sudo bash -s -- --server … --token … --ca-fingerprint … --ca-pin … --capture auto
    # Windows, administrator PowerShell
-   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; iex (iwr -UseBasicParsing https://…/api/v1/agent/install.ps1).Content; Install-PmacctAgent -Server … -Token … -CaFingerprint … -CaPin …
+   $u='https://…'; …fetch $u/api/v1/agent/install.ps1 without validation…; iex $s; Install-PmacctAgent -Server $u -Token … -CaFingerprint … -CaPin …
    ```
+   (The Windows one-liner is longer than shown: it works in both Windows PowerShell 5.1 and
+   PowerShell 7 — 5.1 needs a compiled certificate callback, a `{ $true }` script block makes it
+   fail with *"An unexpected error occurred on a send"*. Paste it into **PowerShell**, not `cmd`.)
    The installer fetches the server's CA, **verifies its fingerprint** (given out-of-band by the
    page) before trusting anything, downloads the agent from the analyzer itself
    (`/api/v1/agent/download/{linux-amd64|windows-amd64}`, checksum-verified), enrolls it with the

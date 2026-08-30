@@ -120,8 +120,12 @@
       const flags = [`--server ${t.server_url}`, `--token ${t.enroll_token}`, fp && `--ca-fingerprint ${fp}`, pin && `--ca-pin ${pin}`, `--capture ${capture}`, sendCmdline && '--send-cmdline', spoolDir.trim() && `--spool-dir '${spoolDir.trim()}'`, spoolMaxMb !== 50 && `--spool-max-mb ${spoolMaxMb}`].filter(Boolean).join(' ')
       return `curl -sk ${t.server_url}/api/v1/agent/install.sh | sudo bash -s -- ${flags}`
     }
-    const args = [`-Server ${t.server_url}`, `-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline', spoolDir.trim() && `-SpoolDir '${spoolDir.trim()}'`, spoolMaxMb !== 50 && `-SpoolMaxMb ${spoolMaxMb}`].filter(Boolean).join(' ')
-    return `[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; iex (iwr -UseBasicParsing ${t.server_url}/api/v1/agent/install.ps1).Content; Install-PmacctAgent ${args}`
+    const args = [`-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline', spoolDir.trim() && `-SpoolDir '${spoolDir.trim()}'`, spoolMaxMb !== 50 && `-SpoolMaxMb ${spoolMaxMb}`].filter(Boolean).join(' ')
+    // Works in Windows PowerShell 5.1 and PowerShell 7. A `{ $true }` script-block callback must not
+    // be used: 5.1 runs it on a thread without a runspace and the request dies ("An unexpected error
+    // occurred on a send"); 5.1 gets a compiled callback, 7 uses -SkipCertificateCheck.
+    const boot = `$u='${t.server_url}'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; if ($PSVersionTable.PSVersion.Major -ge 6) { $s = (iwr -UseBasicParsing -SkipCertificateCheck "$u/api/v1/agent/install.ps1").Content } else { if (-not ('PmacctTrustAll' -as [type])) { Add-Type -TypeDefinition 'using System.Net.Security; public static class PmacctTrustAll { public static RemoteCertificateValidationCallback Callback() { return delegate { return true; }; } }' }; [Net.ServicePointManager]::ServerCertificateValidationCallback = [PmacctTrustAll]::Callback(); $s = (iwr -UseBasicParsing "$u/api/v1/agent/install.ps1").Content }; iex $s`
+    return `${boot}; Install-PmacctAgent -Server $u ${args}`
   })
   let manualEnroll = $derived(token ? `pmacct-agent enroll --server ${token.server_url} --token ${token.enroll_token}${token.ca_spki_sha256 ? ` --ca-pin ${token.ca_spki_sha256}` : ''} --capture ${capture}${sendCmdline ? ' --send-cmdline' : ''}${spoolDir.trim() ? ` --spool-dir '${spoolDir.trim()}'` : ''}` : '')
 </script>
