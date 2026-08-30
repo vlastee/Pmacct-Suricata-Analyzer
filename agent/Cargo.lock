@@ -1129,6 +1129,7 @@ dependencies = [
  "hostname",
  "if-addrs",
  "log",
+ "serde_json",
  "sha2",
  "tokio",
  "windows",

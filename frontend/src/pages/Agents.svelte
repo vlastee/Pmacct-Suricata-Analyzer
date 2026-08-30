@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, type Agent, type AgentActivity, type AgentBuild, type AgentRetention, type EnrollToken } from '../lib/api'
+  import { api, type Agent, type AgentActivity, type AgentBuild, type AgentRetention, type EnrollToken, type ExplainReport, type ProcessStat } from '../lib/api'
+  import ExplainPanel from '../lib/components/ExplainPanel.svelte'
   import { fmtAgo, fmtTime, fmtNum, fmtBytes, fmtCompact } from '../lib/format'
   import { currentRange, router } from '../lib/router.svelte'
   import Loading from '../lib/components/Loading.svelte'
@@ -25,7 +26,14 @@
     try { activity = await api.agentActivity(id, currentRange()); actMsg = '' } catch (e: any) { actMsg = e.message }
   }
   $effect(() => { void router.route.query.toString(); void reloadKey; if (open !== null) loadActivity(open) })
-  function toggle(a: Agent) { open = open === a.id ? null : a.id }
+  function toggle(a: Agent) { open = open === a.id ? null : a.id; explainReport = null }
+  // explain a program
+  let explainReport = $state<ExplainReport | null>(null)
+  let explainBusy = $state<string | null>(null)
+  async function explain(agentId: number, p: ProcessStat) {
+    explainBusy = p.exe + p.user + p.container; explainReport = null
+    try { explainReport = await api.explainProgram({ agent: agentId }, { exe: p.exe, user: p.user, container: p.container }, currentRange()) } catch (e: any) { actMsg = e.message } finally { explainBusy = null }
+  }
   let peak = $derived(activity ? Math.max(1, ...activity.timeline.map(b => b.conns)) : 1)
   // retention
   let showRetention = $state(false)
@@ -216,18 +224,21 @@
                 <div class="small muted">Nothing reported in this time range{#if a.last_seen} — last heartbeat {fmtAgo(a.last_seen)}{/if}.</div>
               {:else if actTab === 'programs'}
                 <div class="overflow"><table>
-                  <thead><tr><th>Program</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th class="num">Ports</th><th>Top destinations</th><th>Last</th></tr></thead>
+                  <thead><tr><th>Program</th><th>Container</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th class="num">Ports</th><th>Top destinations</th><th>Last</th><th></th></tr></thead>
                   <tbody>
-                    {#each activity.by_program as p (p.exe + p.user)}
+                    {#each activity.by_program as p (p.exe + p.user + p.container)}
                       <tr>
                         <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe}</strong><div class="small muted mono" style="max-width:360px; overflow:hidden; text-overflow:ellipsis">{p.exe}</div></td>
+                        <td class="small mono">{p.container || '–'}</td>
                         <td class="small">{p.user || '–'}</td><td class="num">{fmtCompact(p.conns)}</td><td class="num">{p.bytes ? fmtBytes(p.bytes) : '–'}</td>
                         <td class="num">{p.peers}</td><td class="num">{p.ports}</td><td class="small mono">{p.top_peers.join(', ')}</td>
                         <td class="small" title={fmtTime(p.last_seen)}>{fmtAgo(p.last_seen)}</td>
+                        <td class="num"><button class="small" onclick={() => explain(a.id, p)} disabled={explainBusy !== null} title="What is this program, what are these destinations, how to verify">{explainBusy === p.exe + p.user + p.container ? '…' : 'Explain'}</button></td>
                       </tr>
                     {/each}
                   </tbody>
                 </table></div>
+                {#if explainReport}<ExplainPanel report={explainReport} onclose={() => (explainReport = null)} />{/if}
               {:else if actTab === 'destinations'}
                 <div class="overflow"><table>
                   <thead><tr><th>Destination</th><th class="num">Port</th><th>Proto</th><th class="num">Conns</th><th>Programs</th><th>Last</th></tr></thead>
@@ -247,7 +258,7 @@
                   <tbody>
                     {#each activity.recent as r, i (i)}
                       <tr>
-                        <td class="small">{fmtTime(r.minute)}</td><td class="mono small">{r.src}</td><td>{r.name}</td><td class="small">{r.user || '–'}</td>
+                        <td class="small">{fmtTime(r.minute)}</td><td class="mono small">{r.src}</td><td>{r.name}{#if r.container} <span class="muted small">→ {r.container}</span>{/if}</td><td class="small">{r.user || '–'}</td>
                         <td><IPLabel ip={r.dst} /></td><td class="num mono">{r.dst_port}</td><td class="small">{r.proto}</td><td class="num">{r.count}</td>
                       </tr>
                     {/each}

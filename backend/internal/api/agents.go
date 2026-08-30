@@ -14,6 +14,7 @@ import (
 
 	"github.com/deezave/pmacct-analyzer/backend/internal/auth"
 	"github.com/deezave/pmacct-analyzer/backend/internal/db"
+	"github.com/deezave/pmacct-analyzer/backend/internal/explain"
 )
 
 // Endpoint agents talk to /api/v1/agent/* with their own bearer token (never a session), and
@@ -188,7 +189,7 @@ func validConn(c *db.EndpointConn, now time.Time) bool {
 	if c.Bytes < 0 {
 		c.Bytes = 0
 	}
-	c.Exe, c.Name, c.User, c.SHA256, c.Cmdline = trunc(c.Exe, 512), trunc(c.Name, 128), trunc(c.User, 128), trunc(strings.ToLower(c.SHA256), 64), trunc(c.Cmdline, 2048)
+	c.Exe, c.Name, c.User, c.SHA256, c.Cmdline, c.Container = trunc(c.Exe, 512), trunc(c.Name, 128), trunc(c.User, 128), trunc(strings.ToLower(c.SHA256), 64), trunc(c.Cmdline, 2048), trunc(c.Container, 128)
 	if c.Name == "" {
 		c.Name = baseName(c.Exe)
 	}
@@ -384,6 +385,45 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
+// explainProgram builds the deterministic write-up for one program (agent or host scoped).
+func (s *Server) explainProgram(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	req := explain.Request{Exe: q.Get("exe"), User: q.Get("user"), Container: q.Get("container")}
+	if v := q.Get("agent"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad agent id")
+			return
+		}
+		req.AgentID = id
+	} else if v := q.Get("host"); v != "" {
+		ip, ok := parseIP(w, v)
+		if !ok {
+			return
+		}
+		req.Host = ip
+	} else {
+		writeErr(w, http.StatusBadRequest, "agent or host is required")
+		return
+	}
+	if req.Exe == "" {
+		writeErr(w, http.StatusBadRequest, "exe is required")
+		return
+	}
+	win, err := s.window(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Window = win
+	rep, err := (&explain.Builder{DB: s.DB, Now: s.Now}).Build(r.Context(), req)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // hostProcesses lists programs seen connecting from a host (agent data) in the window.

@@ -75,7 +75,7 @@ mod platform {
         } else {
             String::new()
         };
-        ProcInfo { pid, exe, name, user, sha256: String::new(), cmdline }
+        ProcInfo { pid, exe, name, user, sha256: String::new(), cmdline, container: String::new() }
     }
 
     fn username(uid: u32) -> String {

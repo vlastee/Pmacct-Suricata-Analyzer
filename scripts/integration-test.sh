@@ -27,7 +27,9 @@ for a in "$@"; do
 done
 
 log() { printf '\033[1;34m[it]\033[0m %s\n' "$*"; }
+CA_FILE=""
 cleanup() {
+  [ -n "$CA_FILE" ] && rm -f "$CA_FILE"
   if [ "$KEEP" = 1 ]; then log "keeping containers ($PG, $APP)"; return; fi
   podman rm -f "$APP" >/dev/null 2>&1 || true
   podman rm -f "$PG" >/dev/null 2>&1 || true
@@ -124,7 +126,7 @@ check "migrations created users table"       bash -c "podman exec $PG psql -U pm
 check "healthz reachable inside container"   bash -c "podman exec $APP curl -sf http://127.0.0.1:8080/healthz | grep -q '\"status\":\"ok\"'"
 check "image HEALTHCHECK passes"             podman healthcheck run "$APP"
 # Built-in HTTPS: the CA downloaded over plain HTTP verifies the TLS listener; without it, TLS fails.
-CA_FILE="$(mktemp)"; trap 'rm -f "$CA_FILE"' EXIT
+CA_FILE="$(mktemp)"   # removed by cleanup() — a second `trap … EXIT` here would replace the container cleanup
 check "tls/info reports internal CA"         bash -c "json /api/v1/tls/info | grep -q '\"internal_ca\":true'"
 check "CA certificate downloadable"           bash -c "curl -sf '$BASE/api/v1/tls/ca' -o '$CA_FILE' && grep -q 'BEGIN CERTIFICATE' '$CA_FILE'"
 check "https verifies with the CA"            bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/healthz' | grep -q '\"status\":\"ok\"'"

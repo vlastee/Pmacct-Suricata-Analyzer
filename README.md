@@ -306,6 +306,16 @@ builds Linux and Windows).
    unreachable) defaults to `/var/lib/pmacct-agent/spool` / `%ProgramData%\pmacct-agent\spool`
    and can be placed on any disk via the builder's *spool dir* field (`--spool-dir`).
 
+**Explain** (button next to every program on host pages and in an agent's activity) turns the
+data into a write-up without any external service: what the program is (built-in knowledge base:
+browsers, `pasta`/`passt`/`slirp4netns` container proxies, runtimes, package managers, Windows
+system components, living-off-the-land binaries…), **which container** a rootless-Podman proxy
+was working for (the agent matches destinations against the containers' own socket tables), each
+destination's rDNS / learned names / ASN with an infrastructure class (CDN, cloud, hosting, ISP…),
+threat-list and reputation status, who else on the LAN uses it, regular-timing (beacon-like)
+detection, a signals list with an overall assessment, and OS-specific commands to verify on the
+machine. `GET /api/v1/explain/program?agent=|host=&exe=&user=&container=&since=`.
+
 The analyzer image builds the agent for both targets in its `agent` stage (Rust; Linux as a fully
 static musl binary, Windows via mingw cross-compile — a few extra minutes on first build; `--build-arg WITH_AGENT=0` skips it, in which
 case the page says no binary is available and you copy a `make agent` build by hand). Binaries are

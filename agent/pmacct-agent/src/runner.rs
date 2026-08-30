@@ -30,13 +30,41 @@ pub fn host_name() -> String {
     hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default()
 }
 
+/// Per-platform container attribution state (a no-op outside Linux).
+#[cfg(target_os = "linux")]
+pub type ContainerMap = crate::containers::Containers;
+#[cfg(not(target_os = "linux"))]
+#[derive(Default)]
+pub struct ContainerMap;
+#[cfg(not(target_os = "linux"))]
+impl ContainerMap {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 /// Resolve the program behind a socket; a process that already exited (short-lived, eBPF) keeps
-/// at least the kernel's command name.
-pub fn identify(resolver: &mut Resolver, s: &Socket, send_cmdline: bool) -> agent_core::model::ProcInfo {
+/// at least the kernel's command name. On Linux the container is attached: the process's own,
+/// or — for pasta/slirp4netns proxies — the one whose inner socket table has this destination.
+pub fn identify(resolver: &mut Resolver, containers: &mut ContainerMap, s: &Socket, send_cmdline: bool) -> agent_core::model::ProcInfo {
     let mut info = resolver.resolve(s.pid, send_cmdline);
     if info.exe.is_empty() && info.name.is_empty() && !s.comm.is_empty() {
         info.name = s.comm.clone();
         info.exe = s.comm.clone();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(c) = containers.for_pid(s.pid) {
+            info.container = c;
+        } else if crate::containers::is_proxy(&info.name) {
+            if let Some(c) = containers.for_destination(s.remote, s.proto) {
+                info.container = c;
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = containers;
     }
     info
 }
@@ -47,6 +75,7 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
     let spool = Spool::new(cfg.spool_dir(), 500, cfg.spool_max_mb.max(1) * 1024 * 1024);
     let mut capture = capture::new(&cfg.capture)?;
     let mut resolver = Resolver::default();
+    let mut containers = ContainerMap::new();
     let mut agg = Aggregator::new(cfg.max_keys.max(1000));
     let mut poll = tokio::time::interval(Duration::from_secs(cfg.interval_secs.max(1)));
     let mut send = tokio::time::interval(Duration::from_secs(cfg.send_every_secs.clamp(5, 600)));
@@ -61,8 +90,8 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
                     Ok(sockets) => {
                         let now = chrono::Utc::now();
                         for s in sockets {
-                            let info = identify(&mut resolver, &s, cfg.send_cmdline);
-                            let key = ConnKey { src: s.local.ip(), proto: s.proto, dst: s.remote.ip(), dst_port: s.remote.port(), exe: info.exe.clone(), user: info.user.clone() };
+                            let info = identify(&mut resolver, &mut containers, &s, cfg.send_cmdline);
+                            let key = ConnKey { src: s.local.ip(), proto: s.proto, dst: s.remote.ip(), dst_port: s.remote.port(), exe: info.exe.clone(), user: info.user.clone(), container: info.container.clone() };
                             agg.observe(now, key, &info, 0, cfg.send_cmdline);
                         }
                     }

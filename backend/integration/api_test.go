@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/config"
 	"github.com/deezave/pmacct-analyzer/backend/internal/db"
 	"github.com/deezave/pmacct-analyzer/backend/internal/enrich"
+	"github.com/deezave/pmacct-analyzer/backend/internal/explain"
 	"github.com/deezave/pmacct-analyzer/backend/internal/notify"
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
@@ -703,6 +705,7 @@ func TestAgents(t *testing.T) {
 			{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443, "exe": `C:\Program Files\Chrome\chrome.exe`, "user": "petro", "count": 5, "bytes": 1234},
 			{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443, "exe": `C:\Program Files\Chrome\chrome.exe`, "user": "petro", "count": 2},
 			{"minute": minute, "src": "192.168.1.10", "proto": "udp", "dst": "1.1.1.1", "dst_port": 53, "exe": "/usr/bin/svchost", "name": "svchost", "user": "SYSTEM"},
+			{"minute": minute, "src": "192.168.1.10", "proto": "tcp", "dst": "151.101.2.49", "dst_port": 443, "exe": "/usr/bin/pasta.avx2", "user": "petro", "container": "web-app"},
 			{"minute": minute, "src": "not-an-ip", "proto": "tcp", "dst": "8.8.8.8", "dst_port": 443},
 		}}
 	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", "", batch, nil); code != 401 {
@@ -712,7 +715,7 @@ func TestAgents(t *testing.T) {
 		Accepted int `json:"accepted"`
 		Rejected int `json:"rejected"`
 	}
-	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, batch, &res); code != 200 || res.Accepted != 3 || res.Rejected != 1 {
+	if code := e.sendAuth(t, "POST", "/api/v1/agent/events", en.AgentToken, batch, &res); code != 200 || res.Accepted != 4 || res.Rejected != 1 {
 		t.Fatalf("events: http %d %+v", code, res)
 	}
 	// Admin view reflects the heartbeat.
@@ -720,7 +723,7 @@ func TestAgents(t *testing.T) {
 		Items []db.Agent `json:"items"`
 	}
 	e.get(t, "/api/v1/agents", &list)
-	if len(list.Items) != 1 || list.Items[0].Version != "0.1.1" || list.Items[0].Capture != "poll" || list.Items[0].Dropped != 2 || list.Items[0].EventsTotal != 3 || len(list.Items[0].IPs) != 1 {
+	if len(list.Items) != 1 || list.Items[0].Version != "0.1.1" || list.Items[0].Capture != "poll" || list.Items[0].Dropped != 2 || list.Items[0].EventsTotal != 4 || len(list.Items[0].IPs) != 1 {
 		t.Fatalf("agents list: %+v", list.Items)
 	}
 	// Host processes: duplicates merged (count 7), name derived from the exe.
@@ -730,21 +733,44 @@ func TestAgents(t *testing.T) {
 		Agents int                 `json:"agents"`
 	}
 	e.get(t, "/api/v1/hosts/192.168.1.10/processes?since=1h", &procs)
-	if procs.Agents != 1 || len(procs.Items) != 2 || procs.Items[0].Name != "chrome.exe" || procs.Items[0].Conns != 7 || procs.Items[0].Bytes != 1234 || procs.Items[0].User != "petro" {
+	if procs.Agents != 1 || len(procs.Items) != 3 || procs.Items[0].Name != "chrome.exe" || procs.Items[0].Conns != 7 || procs.Items[0].Bytes != 1234 || procs.Items[0].User != "petro" {
 		t.Fatalf("processes: %+v", procs.Items)
 	}
 	if v := procs.Via["8.8.8.8"]; len(v) != 1 || v[0] != "chrome.exe (petro)" {
 		t.Fatalf("via map: %+v", procs.Via)
+	}
+	if v := procs.Via["151.101.2.49"]; len(v) != 1 || v[0] != "pasta.avx2 → web-app (petro)" {
+		t.Fatalf("via with container: %+v", procs.Via)
+	}
+	// Explain: knowledge base identifies chrome, the destination is classified, verify commands fit the OS.
+	var rep explain.Report
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 {
+		t.Fatalf("explain: http %d", code)
+	}
+	if rep.Program.Known == nil || rep.Program.Known.Category != "browser" || rep.Program.OS != "windows" || rep.Program.Conns != 7 || len(rep.Destinations) != 1 {
+		t.Fatalf("explain program: %+v", rep.Program)
+	}
+	if d := rep.Destinations[0]; d.Dst != "8.8.8.8" || d.Port != 443 || d.Conns != 7 || d.Service == "" {
+		t.Fatalf("explain destination: %+v", d)
+	}
+	if rep.Assessment.Level != "expected" || len(rep.Verify) == 0 || !strings.Contains(rep.Verify[0], "Get-Process") {
+		t.Fatalf("explain assessment/verify: %+v %v", rep.Assessment, rep.Verify)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&container=web-app&since=1h", en.AgentID, url.QueryEscape("/usr/bin/pasta.avx2")), &rep); code != 200 || rep.Program.Known == nil || rep.Program.Known.Category != "container-networking" || rep.Program.Container != "web-app" {
+		t.Fatalf("explain pasta: http %d %+v", code, rep.Program)
+	}
+	if code := e.get(t, "/api/v1/explain/program?exe=x", nil); code != 400 {
+		t.Errorf("explain without scope: http %d, want 400", code)
 	}
 	// Per-agent activity for the window.
 	var act db.AgentActivity
 	if code := e.get(t, fmt.Sprintf("/api/v1/agents/%d/activity?since=1h", en.AgentID), &act); code != 200 {
 		t.Fatalf("activity: http %d", code)
 	}
-	if act.Rows != 2 || act.Conns != 8 || act.Programs != 2 || act.Peers != 2 || len(act.ByProgram) != 2 || act.ByProgram[0].Name != "chrome.exe" || len(act.Timeline) != 1 || act.Timeline[0].Conns != 8 || len(act.Recent) != 2 {
+	if act.Rows != 3 || act.Conns != 9 || act.Programs != 3 || act.Peers != 3 || len(act.ByProgram) != 3 || act.ByProgram[0].Name != "chrome.exe" || len(act.Timeline) != 1 || act.Timeline[0].Conns != 9 || len(act.Recent) != 3 {
 		t.Fatalf("activity: %+v", act)
 	}
-	if len(act.Destinations) != 2 || act.Destinations[0].Dst != "8.8.8.8" || act.Destinations[0].Conns != 7 || len(act.Destinations[0].Programs) != 1 || act.Destinations[0].Programs[0] != "chrome.exe" {
+	if len(act.Destinations) != 3 || act.Destinations[0].Dst != "8.8.8.8" || act.Destinations[0].Conns != 7 || len(act.Destinations[0].Programs) != 1 || act.Destinations[0].Programs[0] != "chrome.exe" {
 		t.Fatalf("destinations: %+v", act.Destinations)
 	}
 	// A rule finding host→peer gets "via" from the agent data (details + notification text).

@@ -28,6 +28,10 @@ pub struct ProcInfo {
     pub sha256: String,
     #[serde(default)]
     pub cmdline: String,
+    /// Container the connection belongs to (own cgroup, or — for pasta/slirp4netns proxies —
+    /// the container whose inner socket table holds the same destination). Empty on the host.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub container: String,
 }
 
 /// Aggregation key: everything about a connection except the ephemeral source port.
@@ -39,6 +43,7 @@ pub struct ConnKey {
     pub dst_port: u16,
     pub exe: String,
     pub user: String,
+    pub container: String,
 }
 
 /// One per-minute aggregate — the unit stored in `endpoint_conns` on the server.
@@ -56,6 +61,8 @@ pub struct ConnRecord {
     pub pid: u32,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cmdline: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub container: String,
     pub count: u32,
     pub bytes: u64,
 }

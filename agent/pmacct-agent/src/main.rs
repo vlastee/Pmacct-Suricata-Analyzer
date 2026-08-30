@@ -1,4 +1,6 @@
 mod capture;
+#[cfg(target_os = "linux")]
+mod containers;
 mod procinfo;
 mod runner;
 mod service;
@@ -98,10 +100,12 @@ fn main() -> Result<()> {
 fn snapshot(mode: &str, seconds: u64) -> Result<()> {
     use std::io::Write;
     let mut res = procinfo::Resolver::default();
+    let mut containers = runner::ContainerMap::new();
     let out = std::io::stdout();
     let mut out = out.lock();
     let line = |out: &mut std::io::StdoutLock, s: &capture::Socket, info: &agent_core::model::ProcInfo| {
-        writeln!(out, "{:<4} {:<42} -> {:<42} pid={:<7} {} [{}] {}", s.proto, s.local, s.remote, s.pid, if info.name.is_empty() { "?" } else { &info.name }, info.user, info.exe).is_ok()
+        let ctr = if info.container.is_empty() { String::new() } else { format!(" (container {})", info.container) };
+        writeln!(out, "{:<4} {:<42} -> {:<42} pid={:<7} {} [{}] {}{}", s.proto, s.local, s.remote, s.pid, if info.name.is_empty() { "?" } else { &info.name }, info.user, info.exe, ctr).is_ok()
     };
     if mode == "poll" {
         #[cfg(target_os = "linux")]
@@ -111,7 +115,7 @@ fn snapshot(mode: &str, seconds: u64) -> Result<()> {
         let sockets = cap.snapshot()?;
         let _ = writeln!(out, "capture=poll sockets={}", sockets.len());
         for s in sockets {
-            let info = res.resolve(s.pid, false);
+            let info = runner::identify(&mut res, &mut containers, &s, false);
             if !line(&mut out, &s, &info) {
                 break;
             }
@@ -125,7 +129,7 @@ fn snapshot(mode: &str, seconds: u64) -> Result<()> {
     while std::time::Instant::now() < end {
         for s in cap.poll()? {
             n += 1;
-            let info = runner::identify(&mut res, &s, false);
+            let info = runner::identify(&mut res, &mut containers, &s, false);
             if !line(&mut out, &s, &info) {
                 return Ok(());
             }

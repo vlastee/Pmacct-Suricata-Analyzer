@@ -66,6 +66,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/agents/{id}/{action}", s.adminOnly(s.agentAdminAction))
 	mux.HandleFunc("DELETE /api/v1/agents/{id}", s.adminOnly(s.deleteAgent))
 	mux.HandleFunc("GET /api/v1/hosts/{ip}/processes", s.hostProcesses)
+	mux.HandleFunc("GET /api/v1/explain/program", s.adminOnly(s.explainProgram))
 	mux.HandleFunc("GET /api/v1/tls/ca", s.tlsCA)
 	mux.HandleFunc("GET /api/v1/meta", s.meta)
 	mux.HandleFunc("GET /api/v1/overview", s.overview)

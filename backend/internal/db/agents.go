@@ -35,19 +35,20 @@ type Agent struct {
 
 // EndpointConn is one per-minute aggregate reported by an agent.
 type EndpointConn struct {
-	Minute  time.Time `json:"minute"`
-	Host    string    `json:"src"` // local source address
-	Proto   string    `json:"proto"`
-	Dst     string    `json:"dst"`
-	DstPort int       `json:"dst_port"`
-	Exe     string    `json:"exe"`
-	Name    string    `json:"name"`
-	User    string    `json:"user"`
-	SHA256  string    `json:"sha256"`
-	PID     int       `json:"pid"`
-	Cmdline string    `json:"cmdline"`
-	Count   int       `json:"count"`
-	Bytes   int64     `json:"bytes"`
+	Minute    time.Time `json:"minute"`
+	Host      string    `json:"src"` // local source address
+	Proto     string    `json:"proto"`
+	Dst       string    `json:"dst"`
+	DstPort   int       `json:"dst_port"`
+	Exe       string    `json:"exe"`
+	Name      string    `json:"name"`
+	User      string    `json:"user"`
+	SHA256    string    `json:"sha256"`
+	PID       int       `json:"pid"`
+	Cmdline   string    `json:"cmdline"`
+	Container string    `json:"container"`
+	Count     int       `json:"count"`
+	Bytes     int64     `json:"bytes"`
 }
 
 // NewToken returns a random 32-byte token (hex) and its storage hash.
@@ -207,12 +208,12 @@ func (d *DB) InsertEndpointConns(ctx context.Context, agentID int64, rows []Endp
 	}
 	batch := &pgx.Batch{}
 	for _, c := range rows {
-		batch.Queue(`INSERT INTO endpoint_conns (agent_id, minute, host, proto, dst, dst_port, exe, name, "user", sha256, pid, cmdline, count, bytes)
-VALUES ($1, $2, $3::inet, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-ON CONFLICT (agent_id, minute, host, proto, dst, dst_port, exe, "user") DO UPDATE SET
+		batch.Queue(`INSERT INTO endpoint_conns (agent_id, minute, host, proto, dst, dst_port, exe, name, "user", sha256, pid, cmdline, container, count, bytes)
+VALUES ($1, $2, $3::inet, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+ON CONFLICT (agent_id, minute, host, proto, dst, dst_port, exe, "user", container) DO UPDATE SET
   count = endpoint_conns.count + EXCLUDED.count, bytes = endpoint_conns.bytes + EXCLUDED.bytes, pid = EXCLUDED.pid,
   name = EXCLUDED.name, sha256 = EXCLUDED.sha256, cmdline = CASE WHEN EXCLUDED.cmdline <> '' THEN EXCLUDED.cmdline ELSE endpoint_conns.cmdline END`,
-			agentID, c.Minute.UTC().Truncate(time.Minute), c.Host, c.Proto, c.Dst, c.DstPort, c.Exe, c.Name, c.User, c.SHA256, c.PID, c.Cmdline, c.Count, c.Bytes)
+			agentID, c.Minute.UTC().Truncate(time.Minute), c.Host, c.Proto, c.Dst, c.DstPort, c.Exe, c.Name, c.User, c.SHA256, c.PID, c.Cmdline, c.Container, c.Count, c.Bytes)
 	}
 	res := d.Pool.SendBatch(ctx, batch)
 	defer res.Close()
@@ -226,16 +227,17 @@ ON CONFLICT (agent_id, minute, host, proto, dst, dst_port, exe, "user") DO UPDAT
 
 // ProcessStat summarises one program's connections from a host in a window.
 type ProcessStat struct {
-	Exe      string    `json:"exe"`
-	Name     string    `json:"name"`
-	User     string    `json:"user"`
-	SHA256   string    `json:"sha256"`
-	Conns    int64     `json:"conns"`
-	Bytes    int64     `json:"bytes"`
-	Peers    int64     `json:"peers"`
-	Ports    int64     `json:"ports"`
-	LastSeen time.Time `json:"last_seen"`
-	TopPeers []string  `json:"top_peers"`
+	Exe       string    `json:"exe"`
+	Name      string    `json:"name"`
+	User      string    `json:"user"`
+	Container string    `json:"container"`
+	SHA256    string    `json:"sha256"`
+	Conns     int64     `json:"conns"`
+	Bytes     int64     `json:"bytes"`
+	Peers     int64     `json:"peers"`
+	Ports     int64     `json:"ports"`
+	LastSeen  time.Time `json:"last_seen"`
+	TopPeers  []string  `json:"top_peers"`
 }
 
 // HostProcesses lists programs that made connections from host in the window.
@@ -245,12 +247,12 @@ func (d *DB) HostProcesses(ctx context.Context, host string, w Window, limit int
 	}
 	rows, err := d.Pool.Query(ctx, `
 WITH c AS (
-  SELECT exe, name, "user", MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
+  SELECT exe, name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
          COUNT(DISTINCT dst) AS peers, COUNT(DISTINCT dst_port) AS ports, MAX(minute) AS last_seen
   FROM endpoint_conns WHERE host = $1::inet AND minute >= $2 AND minute < $3
-  GROUP BY exe, name, "user")
+  GROUP BY exe, name, "user", container)
 SELECT c.*, (SELECT ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e
-             WHERE e.host = $1::inet AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user"
+             WHERE e.host = $1::inet AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user" AND e.container = c.container
              GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)) AS top_peers
 FROM c ORDER BY conns DESC LIMIT $4`, host, w.Since, w.Until, limit)
 	if err != nil {
@@ -260,7 +262,7 @@ FROM c ORDER BY conns DESC LIMIT $4`, host, w.Since, w.Until, limit)
 	out := []ProcessStat{}
 	for rows.Next() {
 		var p ProcessStat
-		if err := rows.Scan(&p.Exe, &p.Name, &p.User, &p.SHA256, &p.Conns, &p.Bytes, &p.Peers, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
+		if err := rows.Scan(&p.Exe, &p.Name, &p.User, &p.Container, &p.SHA256, &p.Conns, &p.Bytes, &p.Peers, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
 			return nil, err
 		}
 		if p.TopPeers == nil {
@@ -275,21 +277,21 @@ FROM c ORDER BY conns DESC LIMIT $4`, host, w.Since, w.Until, limit)
 // (for the "via" column on host pages).
 func (d *DB) ProcessesForPeers(ctx context.Context, host string, w Window) (map[string][]string, error) {
 	rows, err := d.Pool.Query(ctx, `
-SELECT host(dst), name, "user", SUM(count) AS n FROM endpoint_conns
-WHERE host = $1::inet AND minute >= $2 AND minute < $3 GROUP BY dst, name, "user" ORDER BY dst, n DESC`, host, w.Since, w.Until)
+SELECT host(dst), name, "user", container, SUM(count) AS n FROM endpoint_conns
+WHERE host = $1::inet AND minute >= $2 AND minute < $3 GROUP BY dst, name, "user", container ORDER BY dst, n DESC`, host, w.Since, w.Until)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string][]string{}
 	for rows.Next() {
-		var dst, name, user string
+		var dst, name, user, container string
 		var n int64
-		if err := rows.Scan(&dst, &name, &user, &n); err != nil {
+		if err := rows.Scan(&dst, &name, &user, &container, &n); err != nil {
 			return nil, err
 		}
 		if len(out[dst]) < 3 {
-			out[dst] = append(out[dst], procLabel(name, user))
+			out[dst] = append(out[dst], procLabel(name, user, container))
 		}
 	}
 	return out, rows.Err()
@@ -307,32 +309,54 @@ func (d *DB) ProcessesFor(ctx context.Context, host, peer string, port int, w Wi
 		args = append(args, port)
 		portCond = fmt.Sprintf(" AND dst_port = $%d", len(args))
 	}
-	rows, err := d.Pool.Query(ctx, `SELECT name, "user", exe, SUM(count) AS n FROM endpoint_conns
-WHERE host = $1::inet AND dst = $2::inet AND minute >= $3 AND minute < $4`+portCond+` GROUP BY name, "user", exe ORDER BY n DESC LIMIT $5`, args...)
+	rows, err := d.Pool.Query(ctx, `SELECT name, "user", exe, container, SUM(count) AS n FROM endpoint_conns
+WHERE host = $1::inet AND dst = $2::inet AND minute >= $3 AND minute < $4`+portCond+` GROUP BY name, "user", exe, container ORDER BY n DESC LIMIT $5`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
-		var name, user, exe string
+		var name, user, exe, container string
 		var n int64
-		if err := rows.Scan(&name, &user, &exe, &n); err != nil {
+		if err := rows.Scan(&name, &user, &exe, &container, &n); err != nil {
 			return nil, err
 		}
 		if name == "" {
 			name = exe
 		}
-		out = append(out, procLabel(name, user))
+		out = append(out, procLabel(name, user, container))
 	}
 	return out, rows.Err()
 }
 
-func procLabel(name, user string) string {
+// procLabel renders "pasta.avx2 → mycontainer (petro)".
+func procLabel(name, user, container string) string {
+	if container != "" {
+		name += " → " + container
+	}
 	if user != "" {
 		return name + " (" + user + ")"
 	}
 	return name
+}
+
+// AgentByID returns one agent (nil when unknown).
+func (d *DB) AgentByID(ctx context.Context, id int64) (*Agent, error) {
+	a, err := scanAgent(d.Pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE id = $1`, id))
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+// AgentForHost finds the (most recently seen, active) agent that owns a local address.
+func (d *DB) AgentForHost(ctx context.Context, host string) (*Agent, error) {
+	a, err := scanAgent(d.Pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE $1::inet = ANY(ips) AND revoked_at IS NULL ORDER BY last_seen DESC NULLS LAST LIMIT 1`, host))
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
 }
 
 // PruneEndpointConns drops aggregates older than the retention.
@@ -375,14 +399,15 @@ type AgentBucket struct {
 }
 
 type AgentRecentRow struct {
-	Minute  time.Time `json:"minute"`
-	Host    string    `json:"src"`
-	Proto   string    `json:"proto"`
-	Dst     string    `json:"dst"`
-	DstPort int       `json:"dst_port"`
-	Name    string    `json:"name"`
-	User    string    `json:"user"`
-	Count   int       `json:"count"`
+	Minute    time.Time `json:"minute"`
+	Host      string    `json:"src"`
+	Proto     string    `json:"proto"`
+	Dst       string    `json:"dst"`
+	DstPort   int       `json:"dst_port"`
+	Name      string    `json:"name"`
+	User      string    `json:"user"`
+	Container string    `json:"container"`
+	Count     int       `json:"count"`
 }
 
 // AgentActivityFor summarises one agent's reports in the window.
@@ -394,11 +419,11 @@ FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3`, agent
 	}
 	rows, err := d.Pool.Query(ctx, `
 WITH c AS (
-  SELECT exe, name, "user", MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
+  SELECT exe, name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
          COUNT(DISTINCT dst) AS peers, COUNT(DISTINCT dst_port) AS ports, MAX(minute) AS last_seen
-  FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY exe, name, "user")
+  FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY exe, name, "user", container)
 SELECT c.*, (SELECT ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e
-             WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user"
+             WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user" AND e.container = c.container
              GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)) AS top_peers
 FROM c ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
 	if err != nil {
@@ -406,7 +431,7 @@ FROM c ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
 	}
 	for rows.Next() {
 		var p ProcessStat
-		if err := rows.Scan(&p.Exe, &p.Name, &p.User, &p.SHA256, &p.Conns, &p.Bytes, &p.Peers, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
+		if err := rows.Scan(&p.Exe, &p.Name, &p.User, &p.Container, &p.SHA256, &p.Conns, &p.Bytes, &p.Peers, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -418,8 +443,8 @@ FROM c ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
 	rows.Close()
 	rows, err = d.Pool.Query(ctx, `
 SELECT host(dst), dst_port, proto, SUM(count) AS conns, MAX(minute),
-       (ARRAY(SELECT name FROM endpoint_conns e WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.dst = c.dst AND e.dst_port = c.dst_port AND e.proto = c.proto
-              GROUP BY name ORDER BY SUM(count) DESC LIMIT 3))
+       (ARRAY(SELECT CASE WHEN container <> '' THEN name || ' → ' || container ELSE name END FROM endpoint_conns e WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.dst = c.dst AND e.dst_port = c.dst_port AND e.proto = c.proto
+              GROUP BY name, container ORDER BY SUM(count) DESC LIMIT 3))
 FROM endpoint_conns c WHERE agent_id = $1 AND minute >= $2 AND minute < $3
 GROUP BY dst, dst_port, proto ORDER BY conns DESC LIMIT 100`, agentID, w.Since, w.Until)
 	if err != nil {
@@ -456,7 +481,7 @@ FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP B
 		a.Timeline = append(a.Timeline, b)
 	}
 	rows.Close()
-	rows, err = d.Pool.Query(ctx, `SELECT minute, host(host), proto, host(dst), dst_port, name, "user", count
+	rows, err = d.Pool.Query(ctx, `SELECT minute, host(host), proto, host(dst), dst_port, name, "user", container, count
 FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 ORDER BY minute DESC, count DESC LIMIT 300`, agentID, w.Since, w.Until)
 	if err != nil {
 		return nil, err
@@ -464,7 +489,7 @@ FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 ORDER B
 	defer rows.Close()
 	for rows.Next() {
 		var r AgentRecentRow
-		if err := rows.Scan(&r.Minute, &r.Host, &r.Proto, &r.Dst, &r.DstPort, &r.Name, &r.User, &r.Count); err != nil {
+		if err := rows.Scan(&r.Minute, &r.Host, &r.Proto, &r.Dst, &r.DstPort, &r.Name, &r.User, &r.Container, &r.Count); err != nil {
 			return nil, err
 		}
 		a.Recent = append(a.Recent, r)

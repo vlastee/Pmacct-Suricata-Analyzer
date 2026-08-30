@@ -48,6 +48,7 @@ impl Aggregator {
                 sha256: info.sha256.clone(),
                 pid: info.pid,
                 cmdline: if send_cmdline { info.cmdline.clone() } else { String::new() },
+                container: key.container,
                 count: 1,
                 bytes,
             },
@@ -80,13 +81,13 @@ mod tests {
     use chrono::TimeZone;
 
     fn key(dst_port: u16) -> ConnKey {
-        ConnKey { src: "10.0.0.5".parse().unwrap(), proto: Proto::Tcp, dst: "1.2.3.4".parse().unwrap(), dst_port, exe: "/usr/bin/curl".into(), user: "petro".into() }
+        ConnKey { src: "10.0.0.5".parse().unwrap(), proto: Proto::Tcp, dst: "1.2.3.4".parse().unwrap(), dst_port, exe: "/usr/bin/curl".into(), user: "petro".into(), container: String::new() }
     }
 
     #[test]
     fn folds_same_minute_and_drains_completed_minutes() {
         let mut a = Aggregator::new(10);
-        let info = ProcInfo { pid: 7, exe: "/usr/bin/curl".into(), name: "curl".into(), user: "petro".into(), sha256: "ab".into(), cmdline: "curl x".into() };
+        let info = ProcInfo { pid: 7, exe: "/usr/bin/curl".into(), name: "curl".into(), user: "petro".into(), sha256: "ab".into(), cmdline: "curl x".into(), container: String::new() };
         let t0 = Utc.with_ymd_and_hms(2026, 8, 29, 21, 15, 10).unwrap();
         a.observe(t0, key(443), &info, 100, false);
         a.observe(t0 + TimeDelta::seconds(20), key(443), &info, 50, false);
@@ -121,11 +122,12 @@ mod tests {
 
     #[test]
     fn wire_format() {
-        let rec = ConnRecord { minute: Utc.with_ymd_and_hms(2026, 8, 29, 21, 15, 0).unwrap(), src: "10.0.0.5".parse().unwrap(), proto: Proto::Udp, dst: "1.1.1.1".parse().unwrap(), dst_port: 53, exe: "x".into(), name: "x".into(), user: "u".into(), sha256: String::new(), pid: 1, cmdline: String::new(), count: 3, bytes: 0 };
+        let rec = ConnRecord { minute: Utc.with_ymd_and_hms(2026, 8, 29, 21, 15, 0).unwrap(), src: "10.0.0.5".parse().unwrap(), proto: Proto::Udp, dst: "1.1.1.1".parse().unwrap(), dst_port: 53, exe: "x".into(), name: "x".into(), user: "u".into(), sha256: String::new(), pid: 1, cmdline: String::new(), container: String::new(), count: 3, bytes: 0 };
         let js = serde_json::to_string(&rec).unwrap();
         assert!(js.contains("\"minute\":\"2026-08-29T21:15:00Z\""));
         assert!(js.contains("\"proto\":\"udp\""));
         assert!(js.contains("\"src\":\"10.0.0.5\""));
         assert!(!js.contains("cmdline"));
+        assert!(!js.contains("container"), "empty container is omitted");
     }
 }
