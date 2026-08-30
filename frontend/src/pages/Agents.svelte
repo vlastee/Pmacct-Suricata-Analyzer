@@ -226,9 +226,9 @@
                 <div class="overflow"><table>
                   <thead><tr><th>Program</th><th>Container</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th class="num">Ports</th><th>Top destinations</th><th>Last</th><th></th></tr></thead>
                   <tbody>
-                    {#each activity.by_program as p (p.exe + p.user + p.container)}
+                    {#each activity.by_program as p, i (i + '|' + p.exe + '|' + p.user + '|' + p.container)}
                       <tr>
-                        <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe}</strong><div class="small muted mono" style="max-width:360px; overflow:hidden; text-overflow:ellipsis">{p.exe}</div></td>
+                        <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe || '(unknown process)'}</strong><div class="small muted mono" style="max-width:360px; overflow:hidden; text-overflow:ellipsis">{p.exe || 'socket owner could not be resolved (exited quickly, or not visible to the agent)'}</div></td>
                         <td class="small mono">{p.container || '–'}</td>
                         <td class="small">{p.user || '–'}</td><td class="num">{fmtCompact(p.conns)}</td><td class="num">{p.bytes ? fmtBytes(p.bytes) : '–'}</td>
                         <td class="num">{p.peers}</td><td class="num">{p.ports}</td><td class="small mono">{p.top_peers.join(', ')}</td>
@@ -258,7 +258,7 @@
                   <tbody>
                     {#each activity.recent as r, i (i)}
                       <tr>
-                        <td class="small">{fmtTime(r.minute)}</td><td class="mono small">{r.src}</td><td>{r.name}{#if r.container} <span class="muted small">→ {r.container}</span>{/if}</td><td class="small">{r.user || '–'}</td>
+                        <td class="small">{fmtTime(r.minute)}</td><td class="mono small">{r.src}</td><td>{r.name || '(unknown)'}{#if r.container} <span class="muted small">→ {r.container}</span>{/if}</td><td class="small">{r.user || '–'}</td>
                         <td><IPLabel ip={r.dst} /></td><td class="num mono">{r.dst_port}</td><td class="small">{r.proto}</td><td class="num">{r.count}</td>
                       </tr>
                     {/each}

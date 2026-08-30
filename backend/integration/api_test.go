@@ -914,6 +914,47 @@ func TestAgentRetentionSettings(t *testing.T) {
 	}
 }
 
+// Rows that differ only in the reported name (kernel comm vs executable) must merge into one
+// program row — duplicates crashed the UI's keyed lists.
+func TestProgramsMergeNames(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var id int64
+	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO agents (name, token_hash, last_seen) VALUES ('merge', 'hmerge', now()) RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.db.Pool.Exec(ctx, `DELETE FROM agents WHERE id = $1`, id) })
+	minute := time.Now().UTC().Truncate(time.Minute)
+	rows := []db.EndpointConn{
+		{Minute: minute, Host: "192.168.1.10", Proto: "tcp", Dst: "142.251.177.141", DstPort: 443, Exe: "/usr/local/go/bin/go", Name: "go", User: "petro", Count: 3},
+		{Minute: minute, Host: "192.168.1.10", Proto: "tcp", Dst: "10.0.0.210", DstPort: 3000, Exe: "/usr/local/go/bin/go", Name: "code", User: "petro", Count: 1},
+	}
+	if _, err := e.db.InsertEndpointConns(ctx, id, rows); err != nil {
+		t.Fatal(err)
+	}
+	w := db.Window{Since: minute.Add(-time.Hour), Until: minute.Add(time.Hour)}
+	procs, err := e.db.HostProcesses(ctx, "192.168.1.10", w, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine []db.ProcessStat
+	for _, p := range procs {
+		if p.Exe == "/usr/local/go/bin/go" {
+			mine = append(mine, p)
+		}
+	}
+	if len(mine) != 1 || mine[0].Conns != 4 || mine[0].Peers != 2 {
+		t.Fatalf("host processes should merge by exe/user/container: %+v", mine)
+	}
+	act, err := e.db.AgentActivityFor(ctx, id, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(act.ByProgram) != 1 || act.ByProgram[0].Conns != 4 {
+		t.Fatalf("agent activity should merge: %+v", act.ByProgram)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

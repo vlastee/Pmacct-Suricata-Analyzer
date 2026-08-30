@@ -26,8 +26,11 @@ impl Resolver {
         }
         let mut info = platform::lookup(pid, want_cmdline);
         info.pid = pid;
-        if info.name.is_empty() {
-            info.name = Path::new(&info.exe).file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+        // The executable's file name is the stable identity; the kernel's comm is truncated to 15
+        // characters and can be inherited or renamed (VS Code helpers show up as "code"), so it
+        // only stands in when the path could not be read.
+        if let Some(base) = Path::new(&info.exe).file_name().and_then(|s| s.to_str()).filter(|b| !b.is_empty()) {
+            info.name = base.to_string();
         }
         if !info.exe.is_empty() {
             info.sha256 = self.hash(&info.exe);

@@ -247,10 +247,10 @@ func (d *DB) HostProcesses(ctx context.Context, host string, w Window, limit int
 	}
 	rows, err := d.Pool.Query(ctx, `
 WITH c AS (
-  SELECT exe, name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
+  SELECT exe, MAX(name) AS name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
          COUNT(DISTINCT dst) AS peers, COUNT(DISTINCT dst_port) AS ports, MAX(minute) AS last_seen
   FROM endpoint_conns WHERE host = $1::inet AND minute >= $2 AND minute < $3
-  GROUP BY exe, name, "user", container)
+  GROUP BY exe, "user", container)
 SELECT c.*, (SELECT ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e
              WHERE e.host = $1::inet AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user" AND e.container = c.container
              GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)) AS top_peers
@@ -419,9 +419,9 @@ FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3`, agent
 	}
 	rows, err := d.Pool.Query(ctx, `
 WITH c AS (
-  SELECT exe, name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
+  SELECT exe, MAX(name) AS name, "user", container, MAX(sha256) AS sha256, SUM(count) AS conns, SUM(bytes) AS bytes,
          COUNT(DISTINCT dst) AS peers, COUNT(DISTINCT dst_port) AS ports, MAX(minute) AS last_seen
-  FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY exe, name, "user", container)
+  FROM endpoint_conns WHERE agent_id = $1 AND minute >= $2 AND minute < $3 GROUP BY exe, "user", container)
 SELECT c.*, (SELECT ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e
              WHERE e.agent_id = $1 AND e.minute >= $2 AND e.minute < $3 AND e.exe = c.exe AND e."user" = c."user" AND e.container = c.container
              GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)) AS top_peers
