@@ -36,6 +36,10 @@ enum Cmd {
         /// Capture backend: auto (default), poll, ebpf
         #[arg(long, default_value = "auto")]
         capture: String,
+        /// Directory for spooled batches while the server is unreachable
+        /// (default /var/lib/pmacct-agent/spool or %ProgramData%\pmacct-agent\spool)
+        #[arg(long)]
+        spool_dir: Option<String>,
     },
     /// Run the agent (foreground; the installed service uses this too)
     Run {
@@ -64,7 +68,7 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).format_timestamp_secs().init();
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Enroll { server, token, ca_pin, send_cmdline, capture } => rt().block_on(enroll(server, token, ca_pin, send_cmdline, capture)),
+        Cmd::Enroll { server, token, ca_pin, send_cmdline, capture, spool_dir } => rt().block_on(enroll(server, token, ca_pin, send_cmdline, capture, spool_dir)),
         Cmd::Run { service } => {
             #[cfg(windows)]
             if service {
@@ -133,7 +137,10 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
 }
 
-async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdline: bool, capture: String) -> Result<()> {
+async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdline: bool, capture: String, spool_dir: Option<String>) -> Result<()> {
+    if let Some(d) = spool_dir.as_deref() {
+        std::fs::create_dir_all(d).with_context(|| format!("create spool directory {d}"))?;
+    }
     let server = server.trim().trim_end_matches('/').to_string();
     let mut ca_pem = None;
     if server.starts_with("https://") {
@@ -158,7 +165,8 @@ async fn enroll(server: String, token: String, ca_pin: Option<String>, send_cmdl
         ips: runner::local_ips(),
     };
     let resp = client::enroll(&server, ca_pem.as_deref(), &req).await.context("enrollment")?;
-    let cfg = Config { server: server.clone(), agent_id: resp.agent_id, token: resp.agent_token, ca_pem, interval_secs: 1, send_every_secs: 30, send_cmdline, capture, local_networks: resp.local_networks };
+    let cfg = Config { server: server.clone(), agent_id: resp.agent_id, token: resp.agent_token, ca_pem, interval_secs: 1, send_every_secs: 30, send_cmdline, capture, spool_dir: spool_dir.filter(|d| !d.trim().is_empty()), local_networks: resp.local_networks };
+    std::fs::create_dir_all(cfg.spool_dir()).with_context(|| format!("create spool directory {}", cfg.spool_dir().display()))?;
     let path = Config::default_path();
     cfg.save(&path)?;
     println!("enrolled as \"{}\" (agent #{}); configuration written to {}", resp.name, resp.agent_id, path.display());
@@ -173,6 +181,8 @@ async fn status() -> Result<()> {
     println!("server      {}", cfg.server);
     println!("agent id    {}", cfg.agent_id);
     println!("capture     {}", cfg.capture);
+    let spool = agent_core::spool::Spool::new(cfg.spool_dir(), 500);
+    println!("spool       {} ({} batches, {} bytes)", spool.dir().display(), spool.len(), spool.size_bytes());
     println!("pinned CA   {}", cfg.ca_pem.as_deref().map(|p| pin::fingerprint_sha256(p).unwrap_or_default()).unwrap_or_else(|| "none (http)".into()));
     println!("local ips   {:?}", runner::local_ips());
     let c = client::Client::new(&cfg.server, &cfg.token, cfg.ca_pem.as_deref())?;

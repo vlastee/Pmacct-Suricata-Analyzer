@@ -50,6 +50,15 @@ impl Spool {
         self.files().map(|f| f.len()).unwrap_or(0)
     }
 
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Bytes on disk across all spooled batches.
+    pub fn size_bytes(&self) -> u64 {
+        self.files().unwrap_or_default().iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

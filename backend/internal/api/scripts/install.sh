@@ -6,7 +6,7 @@
 # (given out-of-band by the UI); everything after that is downloaded with that CA only, the
 # binary is checksum-verified, and the agent re-verifies --ca-pin at enrollment.
 set -euo pipefail
-SERVER=""; TOKEN=""; FP=""; PIN=""; CAPTURE="auto"; CMDLINE=""
+SERVER=""; TOKEN=""; FP=""; PIN=""; CAPTURE="auto"; CMDLINE=""; SPOOL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --server) SERVER="$2"; shift 2 ;;
@@ -15,10 +15,11 @@ while [ $# -gt 0 ]; do
     --ca-pin) PIN="$2"; shift 2 ;;
     --capture) CAPTURE="$2"; shift 2 ;;
     --send-cmdline) CMDLINE="--send-cmdline"; shift ;;
+    --spool-dir) SPOOL="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$SERVER" ] && [ -n "$TOKEN" ] || { echo "usage: --server URL --token TOKEN [--ca-fingerprint FP] [--ca-pin PIN] [--capture auto|poll|ebpf] [--send-cmdline]" >&2; exit 2; }
+[ -n "$SERVER" ] && [ -n "$TOKEN" ] || { echo "usage: --server URL --token TOKEN [--ca-fingerprint FP] [--ca-pin PIN] [--capture auto|poll|ebpf] [--send-cmdline] [--spool-dir DIR]" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)" >&2; exit 2; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 2; }
 SERVER="${SERVER%/}"
@@ -47,6 +48,7 @@ echo "$SUM  $TMP/pmacct-agent" | sha256sum -c - >/dev/null || { echo "checksum m
 if systemctl is-active --quiet pmacct-agent 2>/dev/null; then systemctl stop pmacct-agent; fi
 install -m 0755 "$TMP/pmacct-agent" /usr/local/bin/pmacct-agent
 PINARG=(); [ -n "$PIN" ] && PINARG=(--ca-pin "$PIN")
-/usr/local/bin/pmacct-agent enroll --server "$SERVER" --token "$TOKEN" "${PINARG[@]}" --capture "$CAPTURE" $CMDLINE
+SPOOLARG=(); [ -n "$SPOOL" ] && SPOOLARG=(--spool-dir "$SPOOL")
+/usr/local/bin/pmacct-agent enroll --server "$SERVER" --token "$TOKEN" "${PINARG[@]}" --capture "$CAPTURE" $CMDLINE "${SPOOLARG[@]}"
 /usr/local/bin/pmacct-agent install
 echo "done — the agent should appear online on the Agents page within a minute"

@@ -302,7 +302,9 @@ builds Linux and Windows).
    token and CA pin, and registers the service (systemd / Windows service; on Windows the CA is
    also imported into the trusted roots). Manual steps are shown under the command as well.
    The agent then trusts **only** that CA. Config: `/etc/pmacct-agent/agent.toml` or
-   `%ProgramData%\pmacct-agent\agent.toml`.
+   `%ProgramData%\pmacct-agent\agent.toml`; its spool (batches held while the server is
+   unreachable) defaults to `/var/lib/pmacct-agent/spool` / `%ProgramData%\pmacct-agent\spool`
+   and can be placed on any disk via the builder's *spool dir* field (`--spool-dir`).
 
 The analyzer image builds the agent for both targets in its `agent` stage (Rust; Linux as a fully
 static musl binary, Windows via mingw cross-compile — a few extra minutes on first build; `--build-arg WITH_AGENT=0` skips it, in which

@@ -5,6 +5,10 @@ pub const SERVICE_NAME: &str = "pmacct-agent";
 
 #[cfg(target_os = "linux")]
 pub fn install() -> Result<()> {
+    use agent_core::config::Config;
+    let cfg = Config::load(&Config::default_path()).context("load configuration (run `pmacct-agent enroll` first)")?;
+    let spool = cfg.spool_dir();
+    std::fs::create_dir_all(&spool).with_context(|| format!("create {}", spool.display()))?;
     let exe = std::env::current_exe()?;
     let target = std::path::Path::new("/usr/local/bin/pmacct-agent");
     if exe != target {
@@ -12,9 +16,10 @@ pub fn install() -> Result<()> {
     }
     let unit = format!(
         "[Unit]\nDescription=pmacct-analyzer endpoint agent\nAfter=network-online.target\nWants=network-online.target\n\n\
-[Service]\nExecStart={}\nRestart=always\nRestartSec=5\nUser=root\nProtectSystem=strict\nReadWritePaths=/etc/pmacct-agent\nNoNewPrivileges=yes\nPrivateTmp=yes\n\n\
+[Service]\nExecStart={}\nRestart=always\nRestartSec=5\nUser=root\nProtectSystem=strict\nReadWritePaths=/etc/pmacct-agent {}\nNoNewPrivileges=yes\nPrivateTmp=yes\n\n\
 [Install]\nWantedBy=multi-user.target\n",
-        format!("{} run", target.display())
+        format!("{} run", target.display()),
+        spool.display()
     );
     std::fs::write("/etc/systemd/system/pmacct-agent.service", unit).context("write unit")?;
     for args in [vec!["daemon-reload"], vec!["enable", "--now", SERVICE_NAME]] {

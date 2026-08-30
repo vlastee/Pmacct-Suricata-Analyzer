@@ -19,6 +19,7 @@
   let name = $state('')
   let capture = $state('auto')
   let sendCmdline = $state(false)
+  let spoolDir = $state('')
   let token = $state<EnrollToken | null>(null)
   let tokenOS = $state<'linux' | 'windows'>('linux')
 
@@ -61,13 +62,13 @@
     const fp = t.ca_fingerprint_sha256 ?? ''
     const pin = t.ca_spki_sha256 ?? ''
     if (tokenOS === 'linux') {
-      const flags = [`--server ${t.server_url}`, `--token ${t.enroll_token}`, fp && `--ca-fingerprint ${fp}`, pin && `--ca-pin ${pin}`, `--capture ${capture}`, sendCmdline && '--send-cmdline'].filter(Boolean).join(' ')
+      const flags = [`--server ${t.server_url}`, `--token ${t.enroll_token}`, fp && `--ca-fingerprint ${fp}`, pin && `--ca-pin ${pin}`, `--capture ${capture}`, sendCmdline && '--send-cmdline', spoolDir.trim() && `--spool-dir '${spoolDir.trim()}'`].filter(Boolean).join(' ')
       return `curl -sk ${t.server_url}/api/v1/agent/install.sh | sudo bash -s -- ${flags}`
     }
-    const args = [`-Server ${t.server_url}`, `-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline'].filter(Boolean).join(' ')
+    const args = [`-Server ${t.server_url}`, `-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline', spoolDir.trim() && `-SpoolDir '${spoolDir.trim()}'`].filter(Boolean).join(' ')
     return `[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; iex (iwr -UseBasicParsing ${t.server_url}/api/v1/agent/install.ps1).Content; Install-PmacctAgent ${args}`
   })
-  let manualEnroll = $derived(token ? `pmacct-agent enroll --server ${token.server_url} --token ${token.enroll_token}${token.ca_spki_sha256 ? ` --ca-pin ${token.ca_spki_sha256}` : ''} --capture ${capture}${sendCmdline ? ' --send-cmdline' : ''}` : '')
+  let manualEnroll = $derived(token ? `pmacct-agent enroll --server ${token.server_url} --token ${token.enroll_token}${token.ca_spki_sha256 ? ` --ca-pin ${token.ca_spki_sha256}` : ''} --capture ${capture}${sendCmdline ? ' --send-cmdline' : ''}${spoolDir.trim() ? ` --spool-dir '${spoolDir.trim()}'` : ''}` : '')
 </script>
 
 <Loading {error} />
@@ -87,6 +88,7 @@
       </select>
     </label>
     <label class="row" style="gap:.3rem"><input type="checkbox" bind:checked={sendCmdline} /> send command lines</label>
+    <input bind:value={spoolDir} size="28" placeholder={os === 'linux' ? 'spool dir (default /var/lib/pmacct-agent/spool)' : 'spool dir (default %ProgramData%\\pmacct-agent\\spool)'} title="Where batches are kept while the server is unreachable — put it on the disk you prefer; bounded to 500 batches" />
     <button type="submit" class="primary">Generate install command</button>
     {#if msg}<span class="small muted">{msg}</span>{/if}
   </form>

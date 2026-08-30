@@ -24,6 +24,10 @@ pub struct Config {
     /// Capture backend: auto (event-driven when possible, else poll), poll, ebpf (Linux), etw (Windows).
     #[serde(default = "default_capture")]
     pub capture: String,
+    /// Where batches are spooled while the server is unreachable (bounded). None = platform default:
+    /// /var/lib/pmacct-agent/spool or %ProgramData%\pmacct-agent\spool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_dir: Option<String>,
     /// Local networks (from enrollment); connections to peers outside them are what matters,
     /// but everything non-loopback is reported so LAN-to-LAN scans are attributable too.
     #[serde(default)]
@@ -50,7 +54,33 @@ impl Config {
         Self::data_dir().join("agent.toml")
     }
 
-    /// Directory for config and the spool.
+    /// Effective spool directory: config, else PMACCT_AGENT_SPOOL, else the platform default.
+    pub fn spool_dir(&self) -> PathBuf {
+        if let Some(d) = self.spool_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            return PathBuf::from(d);
+        }
+        if let Ok(p) = std::env::var("PMACCT_AGENT_SPOOL") {
+            return PathBuf::from(p);
+        }
+        Self::default_spool_dir()
+    }
+
+    /// Platform default spool location (variable data, not configuration).
+    pub fn default_spool_dir() -> PathBuf {
+        if let Ok(p) = std::env::var("PMACCT_AGENT_DIR") {
+            return PathBuf::from(p).join("spool");
+        }
+        #[cfg(windows)]
+        {
+            Self::data_dir().join("spool")
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("/var/lib/pmacct-agent/spool")
+        }
+    }
+
+    /// Directory for the configuration.
     pub fn data_dir() -> PathBuf {
         if let Ok(p) = std::env::var("PMACCT_AGENT_DIR") {
             return PathBuf::from(p);
@@ -83,5 +113,29 @@ impl Config {
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spool_dir_precedence() {
+        let base = Config { server: "https://x".into(), agent_id: 1, token: "t".into(), ca_pem: None, interval_secs: 1, send_every_secs: 30, send_cmdline: false, capture: "auto".into(), spool_dir: None, local_networks: vec![] };
+        // Explicit config wins over everything.
+        let mut c = base.clone();
+        c.spool_dir = Some("/mnt/fast/spool".into());
+        assert_eq!(c.spool_dir(), PathBuf::from("/mnt/fast/spool"));
+        // Blank config value falls through to the default.
+        c.spool_dir = Some("  ".into());
+        assert_eq!(c.spool_dir(), Config::default_spool_dir());
+        // Round-trips through TOML, and is omitted when unset.
+        let toml_text = toml::to_string(&base).unwrap();
+        assert!(!toml_text.contains("spool_dir"));
+        let back: Config = toml::from_str(&toml_text).unwrap();
+        assert_eq!(back.spool_dir, None);
+        let with: Config = toml::from_str(&format!("{toml_text}spool_dir = \"/data/spool\"\n")).unwrap();
+        assert_eq!(with.spool_dir(), PathBuf::from("/data/spool"));
     }
 }

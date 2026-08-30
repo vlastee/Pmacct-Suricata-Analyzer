@@ -39,7 +39,13 @@ Capture backend: `--capture auto|poll|ebpf` at enroll time (or `capture = "..."`
 ```
 
 Configuration: `/etc/pmacct-agent/agent.toml` (Linux) or `%ProgramData%\pmacct-agent\agent.toml`
-(Windows); override with `PMACCT_AGENT_CONFIG` / `PMACCT_AGENT_DIR`. Spool: `<dir>/spool/`.
+(Windows); override with `PMACCT_AGENT_CONFIG` / `PMACCT_AGENT_DIR`.
+
+Spool (batches kept while the server is unreachable; bounded to 500 batches, oldest dropped):
+`/var/lib/pmacct-agent/spool` (Linux) or `%ProgramData%\pmacct-agent\spool` (Windows). Put it on
+the disk you prefer with `enroll --spool-dir DIR` (the installers pass `--spool-dir` /
+`-SpoolDir`), `spool_dir` in `agent.toml`, or `PMACCT_AGENT_SPOOL`; the systemd unit's
+`ReadWritePaths` follows it. `pmacct-agent status` shows the path, batch count and size.
 
 ## Security
 

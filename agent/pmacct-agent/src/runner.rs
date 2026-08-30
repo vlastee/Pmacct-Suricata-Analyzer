@@ -44,7 +44,7 @@ pub fn identify(resolver: &mut Resolver, s: &Socket, send_cmdline: bool) -> agen
 /// Runs until `stop` flips to true.
 pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
     let client = Client::new(&cfg.server, &cfg.token, cfg.ca_pem.as_deref())?;
-    let spool = Spool::new(Config::data_dir().join("spool"), 500);
+    let spool = Spool::new(cfg.spool_dir(), 500);
     let mut capture = capture::new(&cfg.capture)?;
     let mut resolver = Resolver::default();
     let mut agg = Aggregator::new(50_000);
@@ -52,7 +52,7 @@ pub async fn run(cfg: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
     let mut send = tokio::time::interval(Duration::from_secs(cfg.send_every_secs.clamp(5, 600)));
     let mut last_upload = std::time::Instant::now();
     let capture_name = capture.name().to_string();
-    info!("capture={} interval={}s upload every {}s spool={}", capture_name, cfg.interval_secs, cfg.send_every_secs, spool.len());
+    info!("capture={} interval={}s upload every {}s spool={} ({} queued)", capture_name, cfg.interval_secs, cfg.send_every_secs, spool.dir().display(), spool.len());
 
     loop {
         tokio::select! {

@@ -13,7 +13,8 @@ function Install-PmacctAgent {
         [string]$CaFingerprint = "",
         [string]$CaPin = "",
         [string]$Capture = "auto",
-        [switch]$SendCmdline
+        [switch]$SendCmdline,
+        [string]$SpoolDir = ""
     )
     $ErrorActionPreference = "Stop"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -53,6 +54,7 @@ function Install-PmacctAgent {
     $args = @("enroll", "--server", $Server, "--token", $Token, "--capture", $Capture)
     if ($CaPin) { $args += @("--ca-pin", $CaPin) }
     if ($SendCmdline) { $args += "--send-cmdline" }
+    if ($SpoolDir) { $args += @("--spool-dir", $SpoolDir) }
     & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "enrollment failed" }
     if ($svc) { & $exe uninstall | Out-Null }
