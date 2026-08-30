@@ -6,14 +6,15 @@ description = "Shared protocol, aggregation, buffering and pinned-TLS client for
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1"
 hex = "0.4"
 log = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-toml = "0.8"
-x509-parser = "0.16"
+sha2 = "0.11"
+toml = "1"
+x509-parser = "0.18"

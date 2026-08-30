@@ -7,13 +7,14 @@ use std::io::Write;
 use std::time::Duration;
 
 fn builder(ca_pem: Option<&str>, insecure: bool) -> Result<reqwest::ClientBuilder> {
+    // Pure-Rust crypto (ring): no cmake/C toolchain needed, which keeps the Windows cross-build simple.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut b = reqwest::Client::builder()
-        .use_rustls_tls()
         .timeout(Duration::from_secs(30))
         .user_agent(format!("pmacct-agent/{}", crate::VERSION));
     if let Some(pem) = ca_pem {
         let cert = reqwest::Certificate::from_pem(pem.as_bytes()).context("CA certificate")?;
-        b = b.tls_built_in_root_certs(false).add_root_certificate(cert);
+        b = b.tls_certs_only([cert]); // the pinned CA is the only trusted root
     }
     if insecure {
         b = b.danger_accept_invalid_certs(true);

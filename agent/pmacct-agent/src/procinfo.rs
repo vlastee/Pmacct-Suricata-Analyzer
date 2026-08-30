@@ -138,7 +138,7 @@ mod platform {
             let mut domain = vec![0u16; 256];
             let (mut nlen, mut dlen) = (name.len() as u32, domain.len() as u32);
             let mut use_ = SID_NAME_USE::default();
-            if LookupAccountSidW(None, tu.User.Sid, PWSTR(name.as_mut_ptr()), &mut nlen, PWSTR(domain.as_mut_ptr()), &mut dlen, &mut use_).is_ok() {
+            if LookupAccountSidW(None, tu.User.Sid, Some(PWSTR(name.as_mut_ptr())), &mut nlen, Some(PWSTR(domain.as_mut_ptr())), &mut dlen, &mut use_).is_ok() {
                 let n = String::from_utf16_lossy(&name[..nlen as usize]);
                 let d = String::from_utf16_lossy(&domain[..dlen as usize]);
                 if d.is_empty() { n } else { format!("{d}\\{n}") }
