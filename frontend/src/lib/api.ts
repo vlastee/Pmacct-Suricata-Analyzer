@@ -36,6 +36,7 @@ export interface Agent {
   enrolled_at: string; last_seen: string | null; last_ip: string | null; events_total: number; last_batch: number; dropped: number
   revoked_at: string | null; note: string
 }
+export interface AgentBuild { target: string; file: string; size: number; sha256: string; built: string }
 export interface EnrollToken { enroll_token: string; expires_at: string; server_url: string; tls_required: boolean; ca_fingerprint_sha256?: string; ca_spki_sha256?: string }
 export interface ProcessStat { exe: string; name: string; user: string; sha256: string; conns: number; bytes: number; peers: number; ports: number; last_seen: string; top_peers: string[] }
 export interface IPNote { id: number; ip: string; body: string; author: string; created_at: string }
@@ -183,6 +184,7 @@ export const api = {
   tlsInfo: () => request<TLSInfo>('/api/v1/tls/info'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
   agents: () => request<{ items: Agent[]; tls_required: boolean }>('/api/v1/agents'),
+  agentBuilds: () => request<{ items: AgentBuild[]; dir: string }>('/api/v1/agent/builds'),
   createEnrollToken: (name: string) =>
     request<EnrollToken>('/api/v1/agents/enroll-tokens', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }),
   updateAgent: (id: number, name: string, note: string) =>

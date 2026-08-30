@@ -71,7 +71,8 @@ podman exec -i "$PG" psql -U pmacct -d pmacct -q < "$ROOT/backend/integration/fi
 podman exec -i "$PG" psql -U pmacct -d pmacct -q < "$ROOT/backend/integration/fixtures/data.sql" >/dev/null
 
 log "building application image $IMAGE"
-podman build -q --format docker -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT" >/dev/null
+# WITH_AGENT=0: the Rust cross-build takes minutes; the e2e uses the locally built agent instead.
+podman build -q --format docker --build-arg WITH_AGENT=0 -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT" >/dev/null
 
 log "starting application container"
 podman run -d --name "$APP" --network "$NET" -p 127.0.0.1::8080 -p 127.0.0.1::8091 \
@@ -129,6 +130,9 @@ check "CA certificate downloadable"           bash -c "curl -sf '$BASE/api/v1/tl
 check "https verifies with the CA"            bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/healthz' | grep -q '\"status\":\"ok\"'"
 check "https rejected without the CA"         bash -c "! curl -sf '$TLS_BASE/healthz' >/dev/null 2>&1"
 check "https serves the API"                  bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/api/v1/tls/info' | grep -q '\"enabled\":true'"
+check "agent installer script served"        bash -c "json /api/v1/agent/install.sh | grep -q 'pmacct-agent installer'"
+check "agent builds endpoint answers"         bash -c "json /api/v1/agent/builds | grep -q '\"items\"'"
+check "missing agent build is a clean 404"    bash -c "curl -s -o /dev/null -w '%{http_code}' '$BASE/api/v1/agent/download/linux-amd64' | grep -q 404"
 # Endpoint agent: the real Rust binary enrolls over pinned TLS and heartbeats (skipped when not built).
 AGENT_BIN="$ROOT/agent/target/release/pmacct-agent"
 if [ -x "$AGENT_BIN" ]; then

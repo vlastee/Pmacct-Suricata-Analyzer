@@ -15,7 +15,8 @@ bpf/            the eBPF program (C, no libbpf dependency) and its compiled obje
 ## Build
 
 ```
-cargo build --release                                   # Linux
+cargo build --release                                   # Linux (glibc, this machine)
+cargo build --release --target x86_64-unknown-linux-musl  # Linux, fully static (rustup target add …; musl-tools) — what the analyzer image ships
 cargo build --release --target x86_64-pc-windows-gnu    # Windows (rustup target add …; mingw-w64)
 cargo test
 ```

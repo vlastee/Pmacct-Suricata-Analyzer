@@ -20,8 +20,10 @@ type Config struct {
 	TLSHosts      []string
 	TLSCertFile   string
 	TLSKeyFile    string
-	DatabaseURL   string
-	StaticDir     string
+	// Directory holding the endpoint agent binaries served to installers (AGENT_DIST_DIR).
+	AgentDistDir string
+	DatabaseURL  string
+	StaticDir    string
 
 	// LocalNetworks are the CIDR prefixes considered "local"/internal.
 	LocalNetworks []netip.Prefix
@@ -227,6 +229,7 @@ func Load() (*Config, error) {
 		ListenAddr:    env("LISTEN_ADDR", ":8080"),
 		TLSListenAddr: env("TLS_LISTEN_ADDR", ""),
 		TLSCertFile:   env("TLS_CERT_FILE", ""),
+		AgentDistDir:  env("AGENT_DIST_DIR", "/app/agent"),
 		TLSKeyFile:    env("TLS_KEY_FILE", ""),
 		DatabaseURL:   env("DATABASE_URL", "postgres://pmacct:pmacctpass@10.0.0.210:55432/pmacct?sslmode=disable"),
 		StaticDir:     env("STATIC_DIR", "../frontend/dist"),

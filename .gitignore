@@ -8,3 +8,4 @@ deploy/grafana_data/
 deploy/analyzer.env
 agent/target/
 agent/**/target/
+agent/dist/

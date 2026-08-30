@@ -9,3 +9,4 @@ deploy/grafana_data
 deploy/*.env
 .env
 .claude
+agent/target

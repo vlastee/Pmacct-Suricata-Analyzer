@@ -14,7 +14,7 @@ build: frontend backend
 
 ## Run the API locally, serving the built frontend (needs .env or env vars).
 run: build
-	set -a; [ -f .env ] && . ./.env; set +a; cd backend && STATIC_DIR=../frontend/dist ./bin/server
+	set -a; [ -f .env ] && . ./.env; set +a; cd backend && STATIC_DIR=../frontend/dist AGENT_DIST_DIR=../agent/dist ./bin/server
 
 ## Development: API on :8080 and Vite dev server on :5173 (proxying /api).
 dev:
@@ -55,6 +55,12 @@ agent:
 
 agent-test:
 	cd agent && cargo test
+
+## Copy the built agent binaries where a locally run server (make run) serves them from.
+agent-dist: agent
+	mkdir -p agent/dist
+	cp agent/target/release/pmacct-agent agent/dist/pmacct-agent-linux-amd64
+	cp agent/target/x86_64-pc-windows-gnu/release/pmacct-agent.exe agent/dist/pmacct-agent-windows-amd64.exe
 
 clean:
 	rm -rf backend/bin frontend/dist agent/target

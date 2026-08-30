@@ -287,14 +287,28 @@ builds Linux and Windows).
 
 1. Enable HTTPS (`TLS_LISTEN_ADDR`) — agent endpoints refuse plain HTTP when TLS is configured, so
    tokens never cross the LAN in clear.
-2. **Agents** page → *Create enrollment token* (single-use, 24 h). Copy the printed command.
-3. On the machine, as root / administrator:
+2. **Agents** page → *Install an agent*: pick the target (Linux / Windows), a name, the capture
+   backend and whether command lines are sent, then *Generate install command*. It mints a
+   single-use enrollment token (24 h) and shows a one-liner for that OS:
    ```
-   pmacct-agent enroll --server https://10.0.0.210:8091 --token <token> --ca-pin <ca_spki_sha256>
-   pmacct-agent install        # systemd unit on Linux, Windows service on Windows
+   # Linux, as root
+   curl -sk https://10.0.0.210:8091/api/v1/agent/install.sh | sudo bash -s -- --server … --token … --ca-fingerprint … --ca-pin … --capture auto
+   # Windows, administrator PowerShell
+   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; iex (iwr -UseBasicParsing https://…/api/v1/agent/install.ps1).Content; Install-PmacctAgent -Server … -Token … -CaFingerprint … -CaPin …
    ```
-   The agent fetches the server's CA, checks it against the pin, and from then on trusts **only**
-   that CA. Config: `/etc/pmacct-agent/agent.toml` or `%ProgramData%\pmacct-agent\agent.toml`.
+   The installer fetches the server's CA, **verifies its fingerprint** (given out-of-band by the
+   page) before trusting anything, downloads the agent from the analyzer itself
+   (`/api/v1/agent/download/{linux-amd64|windows-amd64}`, checksum-verified), enrolls it with the
+   token and CA pin, and registers the service (systemd / Windows service; on Windows the CA is
+   also imported into the trusted roots). Manual steps are shown under the command as well.
+   The agent then trusts **only** that CA. Config: `/etc/pmacct-agent/agent.toml` or
+   `%ProgramData%\pmacct-agent\agent.toml`.
+
+The analyzer image builds the agent for both targets in its `agent` stage (Rust; Linux as a fully
+static musl binary, Windows via mingw cross-compile — a few extra minutes on first build; `--build-arg WITH_AGENT=0` skips it, in which
+case the page says no binary is available and you copy a `make agent` build by hand). Binaries are
+served from `AGENT_DIST_DIR` (default `/app/agent`; `make run` uses `agent/dist`, filled by
+`make agent-dist`).
 
 What it reports: per minute, per (local address, program, user, destination, port, protocol) a
 count — no payloads, no command lines unless `--send-cmdline`. Capture backends (`--capture`,

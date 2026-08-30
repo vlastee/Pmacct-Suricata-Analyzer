@@ -769,6 +769,60 @@ func TestAgents(t *testing.T) {
 	}
 }
 
+func TestAgentDistribution(t *testing.T) {
+	e := setup(t)
+	dir := t.TempDir()
+	e.cfg.AgentDistDir = dir
+	var builds struct {
+		Items []struct {
+			Target string `json:"target"`
+			SHA256 string `json:"sha256"`
+			Size   int64  `json:"size"`
+		} `json:"items"`
+	}
+	e.get(t, "/api/v1/agent/builds", &builds)
+	if len(builds.Items) != 0 {
+		t.Fatalf("empty dist dir should list nothing: %+v", builds.Items)
+	}
+	if code := e.get(t, "/api/v1/agent/download/linux-amd64", nil); code != 404 {
+		t.Errorf("missing build: http %d, want 404", code)
+	}
+	payload := []byte("#!/bin/sh\necho fake agent\n")
+	if err := os.WriteFile(filepath.Join(dir, "pmacct-agent-linux-amd64"), payload, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.get(t, "/api/v1/agent/builds", &builds)
+	if len(builds.Items) != 1 || builds.Items[0].Target != "linux-amd64" || builds.Items[0].Size != int64(len(payload)) {
+		t.Fatalf("builds: %+v", builds.Items)
+	}
+	resp, err := http.Get(e.srv.URL + "/api/v1/agent/download/linux-amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Equal(body, payload) || resp.Header.Get("X-Checksum-Sha256") != builds.Items[0].SHA256 {
+		t.Fatalf("download: %d %q hdr=%s", resp.StatusCode, body, resp.Header.Get("X-Checksum-Sha256"))
+	}
+	resp, _ = http.Get(e.srv.URL + "/api/v1/agent/download/linux-amd64.sha256")
+	sum, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.HasPrefix(string(sum), builds.Items[0].SHA256+"  pmacct-agent-linux-amd64") {
+		t.Errorf("checksum line: %q", sum)
+	}
+	for _, script := range []string{"install.sh", "install.ps1"} {
+		resp, _ = http.Get(e.srv.URL + "/api/v1/agent/" + script)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || !strings.Contains(string(raw), "pmacct-agent installer") {
+			t.Errorf("%s: %d", script, resp.StatusCode)
+		}
+	}
+	if code := e.get(t, "/api/v1/agent/nope.sh", nil); code != 404 {
+		t.Errorf("unknown script: http %d", code)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

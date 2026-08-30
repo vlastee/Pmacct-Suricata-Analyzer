@@ -71,8 +71,9 @@ services:
 
   analyzer:
     build:
-      context: ..                  # repository root (holds Containerfile, backend/, frontend/)
+      context: ..                  # repository root (holds Containerfile, backend/, frontend/, agent/)
       dockerfile: Containerfile
+      # args: { WITH_AGENT: "0" }  # skip the Rust agent cross-build (Agents page then has no downloads)
     image: pmacct-analyzer:latest
     container_name: pmacct-analyzer
     restart: unless-stopped
