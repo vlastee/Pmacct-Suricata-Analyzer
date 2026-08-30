@@ -6,6 +6,7 @@
   import Loading from '../lib/components/Loading.svelte'
   import RuleEditor from '../lib/components/RuleEditor.svelte'
   import { exclusions } from '../lib/exclusions.svelte'
+  import type { KBEntry } from '../lib/api'
   import { fmtTime } from '../lib/format'
 
   let { reloadKey }: { reloadKey: number } = $props()
@@ -76,6 +77,27 @@
   async function preview(r: RuleInfo) {
     msg[r.name] = 'previewing…'
     try { previews[r.name] = (await api.previewRule(r.name)).findings; msg[r.name] = `${previews[r.name].length} finding(s) right now — nothing raised` } catch (e: any) { msg[r.name] = e.message }
+  }
+  // knowledge base
+  let kb = $state<KBEntry[]>([])
+  let kbMsg = $state('')
+  let kbImport = $state('')
+  const kbImportHint = 'import: paste a JSON array, e.g. [{"match_kind":"name","pattern":"pmacct-*","title":"our agent"}]'
+  async function loadKB() { try { kb = (await api.kb()).items } catch (e: any) { kbMsg = e.message } }
+  $effect(() => { void reloadKey; loadKB() })
+  async function removeKB(e: KBEntry) {
+    if (!confirm(`Remove "${e.title}" (${e.match_kind} ${e.pattern})?`)) return
+    try { await api.deleteKB(e.id); await loadKB() } catch (err: any) { kbMsg = err.message }
+  }
+  async function doImport() {
+    kbMsg = ''
+    try {
+      const entries = JSON.parse(kbImport)
+      if (!Array.isArray(entries)) throw new Error('expected a JSON array of entries')
+      const r = await api.importKB(entries)
+      kbMsg = `imported ${r.imported}` + (r.skipped.length ? ` · skipped: ${r.skipped.join('; ')}` : '')
+      kbImport = ''; await loadKB()
+    } catch (err: any) { kbMsg = err.message }
   }
   // trusted list
   let exclPattern = $state('')
@@ -225,6 +247,34 @@
   {:else}<div class="small muted">Nothing excluded. Use “Exclude from alerts” on a host page or in an alert’s details, or add a pattern above.</div>{/if}
 </div>
 
+<div class="card" style="margin-top:1rem">
+  <h3>Knowledge base — your program entries <span class="muted">· {kb.length}</span> <a class="small" href="/api/v1/kb?export=1" download="pmacct-analyzer-kb.json" style="margin-left:.6rem">⬇ export JSON</a></h3>
+  <p class="muted small">Entries used by <b>Explain</b> before the built-in list, matched by executable path (glob), program name (glob) or SHA-256. Add them from any Explain panel (“Add to knowledge base”), or paste an exported array below to import.</p>
+  {#if kb.length}
+    <div class="overflow"><table>
+      <thead><tr><th>Match</th><th>Title</th><th>Category</th><th>Description</th><th>Risk</th><th>By</th><th></th></tr></thead>
+      <tbody>
+        {#each kb as e (e.id)}
+          <tr>
+            <td class="mono small">{e.match_kind} <span class="muted">{e.pattern}</span></td>
+            <td><strong>{e.title}</strong>{#if e.note}<div class="small muted">{e.note}</div>{/if}</td>
+            <td class="small">{e.category || '–'}</td>
+            <td class="small" style="white-space:normal; max-width:420px">{e.description || '–'}{#if e.expected}<div class="muted">talks to: {e.expected}</div>{/if}</td>
+            <td class="small">{e.risk || '–'}</td>
+            <td class="small muted" title={fmtTime(e.updated_at)}>{e.created_by || '–'}</td>
+            <td class="num"><button class="small" onclick={() => removeKB(e)}>Remove</button></td>
+          </tr>
+        {/each}
+      </tbody>
+    </table></div>
+  {:else}<div class="small muted">No entries yet.</div>{/if}
+  <div class="row" style="margin-top:.6rem; align-items:flex-start">
+    <textarea bind:value={kbImport} rows="2" placeholder={kbImportHint} style="flex:1; min-width:260px"></textarea>
+    <button class="small" onclick={doImport} disabled={!kbImport.trim()}>Import</button>
+    {#if kbMsg}<span class="small muted">{kbMsg}</span>{/if}
+  </div>
+</div>
+
 <style>
   .rule.off { opacity: .7; }
   .body { margin-top: .75rem; border-top: 1px solid var(--border); padding-top: .75rem; }
@@ -233,4 +283,5 @@
   .hint { color: var(--text-muted); font-size: .72rem; }
   .wrap { white-space: normal; }
   .x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 .2rem; }
+  textarea { font: inherit; background: var(--surface-2); color: inherit; border: 1px solid var(--border); border-radius: var(--radius); padding: .4rem; }
 </style>

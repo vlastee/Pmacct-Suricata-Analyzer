@@ -41,6 +41,8 @@ type Program struct {
 	Pids          []int      `json:"pids"`
 	Cmdline       string     `json:"cmdline,omitempty"`
 	Known         *Known     `json:"known"`
+	KnownSource   string     `json:"known_source,omitempty"` // "user" | "builtin"
+	KnownID       int64      `json:"known_id,omitempty"`     // user entry id (for editing)
 }
 
 // Destination is one peer with everything we know about it.
@@ -139,7 +141,19 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Report, error) {
 		name = path.Base(strings.ReplaceAll(req.Exe, `\`, "/"))
 	}
 	rep.Program = Program{Name: name, Exe: req.Exe, User: req.User, Container: req.Container, Hashes: sum.Hashes, Hosts: sum.Hosts, Agents: sum.Agents,
-		Conns: sum.Conns, FirstSeen: sum.FirstEver, LastSeen: sum.LastEver, FirstInWindow: sum.FirstInWindow, Pids: sum.Pids, Cmdline: sum.Cmdline, Known: Lookup(name, req.Exe)}
+		Conns: sum.Conns, FirstSeen: sum.FirstEver, LastSeen: sum.LastEver, FirstInWindow: sum.FirstInWindow, Pids: sum.Pids, Cmdline: sum.Cmdline}
+	// User-maintained entries take precedence over the built-in knowledge base.
+	if entries, err := b.DB.ListKB(ctx); err == nil {
+		if m := db.MatchKB(entries, name, req.Exe, sum.Hashes); m != nil {
+			rep.Program.Known = &Known{Title: m.Title, Category: m.Category, Description: m.Description, Expected: m.Expected, Verify: m.Verify, Risk: m.Risk}
+			rep.Program.KnownSource, rep.Program.KnownID = "user", m.ID
+		}
+	}
+	if rep.Program.Known == nil {
+		if k := Lookup(name, req.Exe); k != nil {
+			rep.Program.Known, rep.Program.KnownSource = k, "builtin"
+		}
+	}
 	// Which machine / OS (for verify commands).
 	var agent *db.Agent
 	if req.AgentID > 0 {

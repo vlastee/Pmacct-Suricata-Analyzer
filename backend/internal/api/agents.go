@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -387,6 +388,89 @@ func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
+// ---- knowledge base (user entries) ----
+
+func (s *Server) listKB(w http.ResponseWriter, r *http.Request) {
+	items, err := s.DB.ListKB(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if r.URL.Query().Get("export") == "1" {
+		w.Header().Set("Content-Disposition", `attachment; filename="pmacct-analyzer-kb.json"`)
+		writeJSON(w, http.StatusOK, items)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) upsertKB(w http.ResponseWriter, r *http.Request) {
+	var e db.KBEntry
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&e); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	by := ""
+	if u := auth.UserFrom(r.Context()); u != nil {
+		by = u.Username
+	}
+	if err := e.Normalize(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := s.DB.UpsertKB(r.Context(), &e, by)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// importKB accepts the export format (a JSON array) and upserts every valid entry.
+func (s *Server) importKB(w http.ResponseWriter, r *http.Request) {
+	var entries []db.KBEntry
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&entries); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body: expected an array of entries")
+		return
+	}
+	by := ""
+	if u := auth.UserFrom(r.Context()); u != nil {
+		by = u.Username
+	}
+	imported, skipped := 0, []string{}
+	for i := range entries {
+		e := entries[i]
+		if err := e.Normalize(); err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s %q: %s", e.MatchKind, e.Pattern, err))
+			continue
+		}
+		if _, err := s.DB.UpsertKB(r.Context(), &e, by); err != nil {
+			s.fail(w, err)
+			return
+		}
+		imported++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"imported": imported, "skipped": skipped})
+}
+
+func (s *Server) deleteKB(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	ok, err := s.DB.DeleteKB(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no such entry")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
+}
+
 // explainProgram builds the deterministic write-up for one program (agent or host scoped).
 func (s *Server) explainProgram(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -442,11 +526,20 @@ func (s *Server) hostProcesses(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	direction := "from" // programs running on this address
+	if len(items) == 0 {
+		// Not an agent host (typically an external address): show who contacted it instead.
+		if items, err = s.DB.ProcessesTowards(r.Context(), ip, win, qInt(r, "limit", 50)); err != nil {
+			s.fail(w, err)
+			return
+		}
+		direction = "to"
+	}
 	via, err := s.DB.ProcessesForPeers(r.Context(), ip, win)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	agents, _ := s.DB.CountActiveAgents(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "via": via, "agents": agents})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "via": via, "agents": agents, "direction": direction})
 }

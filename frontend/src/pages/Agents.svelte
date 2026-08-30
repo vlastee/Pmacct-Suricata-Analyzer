@@ -19,14 +19,25 @@
   // per-agent activity (click a row)
   let open = $state<number | null>(null)
   let activity = $state<AgentActivity | null>(null)
+  let activityFor = $state<number | null>(null) // which agent `activity` belongs to
   let actMsg = $state('')
   let actTab = $state<'programs' | 'destinations' | 'recent'>('programs')
+  // Refreshes keep the current tables (and the Explain panel) on screen and swap the data in
+  // when it arrives; unmounting them made the page shorter and jumped the scroll position.
   async function loadActivity(id: number) {
-    activity = null; actMsg = 'loading…'
-    try { activity = await api.agentActivity(id, currentRange()); actMsg = '' } catch (e: any) { actMsg = e.message }
+    const fresh = activityFor !== id
+    if (fresh) { activity = null; actMsg = 'loading…' }
+    try {
+      const a = await api.agentActivity(id, currentRange())
+      if (open === id) { activity = a; activityFor = id; actMsg = '' }
+    } catch (e: any) { actMsg = e.message }
   }
   $effect(() => { void router.route.query.toString(); void reloadKey; if (open !== null) loadActivity(open) })
-  function toggle(a: Agent) { open = open === a.id ? null : a.id; explainReport = null }
+  function toggle(a: Agent) {
+    open = open === a.id ? null : a.id
+    explainReport = null
+    if (open === null || open !== activityFor) { activity = null; activityFor = null }
+  }
   // explain a program
   let explainReport = $state<ExplainReport | null>(null)
   let explainBusy = $state<string | null>(null)
@@ -238,7 +249,7 @@
                     {/each}
                   </tbody>
                 </table></div>
-                {#if explainReport}<ExplainPanel report={explainReport} onclose={() => (explainReport = null)} />{/if}
+                {#if explainReport}<ExplainPanel report={explainReport} onclose={() => (explainReport = null)} onchanged={() => { const r = explainReport; if (r) explain(a.id, { exe: r.program.exe, user: r.program.user, container: r.program.container ?? '' } as ProcessStat) }} />{/if}
               {:else if actTab === 'destinations'}
                 <div class="overflow"><table>
                   <thead><tr><th>Destination</th><th class="num">Port</th><th>Proto</th><th class="num">Conns</th><th>Programs</th><th>Last</th></tr></thead>
@@ -277,7 +288,7 @@
   .cmd { white-space: pre-wrap; word-break: break-all; background: var(--surface-2); padding: .5rem; border-radius: var(--radius); font-size: .8rem; margin: .4rem 0; }
   tr.off { opacity: .6; }
   tr.sel td { background: var(--surface-2); }
-  tr.detail td { background: var(--surface-2); }
+  tr.detail td { background: var(--surface-2); white-space: normal; }
   .bars { display: flex; align-items: flex-end; gap: 1px; height: 42px; margin: .2rem 0 .6rem; }
   .bar { flex: 1 1 0; min-width: 2px; background: rgba(57,135,229,.55); border-radius: 1px 1px 0 0; }
   .warn { color: #f0c56b; }

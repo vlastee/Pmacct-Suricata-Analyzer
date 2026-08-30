@@ -742,6 +742,19 @@ func TestAgents(t *testing.T) {
 	if v := procs.Via["151.101.2.49"]; len(v) != 1 || v[0] != "pasta.avx2 → web-app (petro)" {
 		t.Fatalf("via with container: %+v", procs.Via)
 	}
+	// The external address's own page: programs that contacted it, and via keyed by the local peer.
+	var ext struct {
+		Items     []db.ProcessStat    `json:"items"`
+		Via       map[string][]string `json:"via"`
+		Direction string              `json:"direction"`
+	}
+	e.get(t, "/api/v1/hosts/8.8.8.8/processes?since=1h", &ext)
+	if ext.Direction != "to" || len(ext.Items) != 1 || ext.Items[0].Host != "192.168.1.10" || ext.Items[0].Name != "chrome.exe" || ext.Items[0].Conns != 7 {
+		t.Fatalf("external processes: %+v", ext)
+	}
+	if v := ext.Via["192.168.1.10"]; len(v) != 1 || v[0] != "chrome.exe (petro)" {
+		t.Fatalf("external via: %+v", ext.Via)
+	}
 	// Explain: knowledge base identifies chrome, the destination is classified, verify commands fit the OS.
 	var rep explain.Report
 	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 {
@@ -761,6 +774,39 @@ func TestAgents(t *testing.T) {
 	}
 	if code := e.get(t, "/api/v1/explain/program?exe=x", nil); code != 400 {
 		t.Errorf("explain without scope: http %d, want 400", code)
+	}
+	// User knowledge base: a path-glob entry overrides the built-in browser entry for chrome.
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM kb_entries`)
+	t.Cleanup(func() { _, _ = e.db.Pool.Exec(ctx, `DELETE FROM kb_entries`) })
+	var kb db.KBEntry
+	if code := e.send(t, "POST", "/api/v1/kb", map[string]any{"match_kind": "path", "pattern": `C:\Program Files\Chrome\*`, "title": "Petro's Chrome", "category": "browser", "description": "our own note", "verify": []string{"echo hi"}}, &kb); code != 200 || kb.ID == 0 || kb.Pattern != "c:/program files/chrome/*" {
+		t.Fatalf("kb upsert: http %d %+v", code, kb)
+	}
+	if code := e.send(t, "POST", "/api/v1/kb", map[string]any{"match_kind": "name", "pattern": "*", "title": "x"}, nil); code != 400 {
+		t.Errorf("kb catch-all pattern: http %d, want 400", code)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 || rep.Program.KnownSource != "user" || rep.Program.KnownID != kb.ID || rep.Program.Known.Title != "Petro's Chrome" || !strings.Contains(strings.Join(rep.Verify, "\n"), "echo hi") {
+		t.Fatalf("explain with user kb: http %d %+v verify=%v", code, rep.Program, rep.Verify)
+	}
+	var imp struct {
+		Imported int      `json:"imported"`
+		Skipped  []string `json:"skipped"`
+	}
+	if code := e.send(t, "POST", "/api/v1/kb/import", []map[string]any{{"match_kind": "name", "pattern": "svchost", "title": "svc"}, {"match_kind": "hash", "pattern": "nope", "title": "bad"}}, &imp); code != 200 || imp.Imported != 1 || len(imp.Skipped) != 1 {
+		t.Fatalf("kb import: http %d %+v", code, imp)
+	}
+	var kbl struct {
+		Items []db.KBEntry `json:"items"`
+	}
+	e.get(t, "/api/v1/kb", &kbl)
+	if len(kbl.Items) != 2 {
+		t.Fatalf("kb list: %+v", kbl.Items)
+	}
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/kb/%d", kb.ID), nil, nil); code != 200 {
+		t.Fatalf("kb delete: http %d", code)
+	}
+	if code := e.get(t, fmt.Sprintf("/api/v1/explain/program?agent=%d&exe=%s&user=petro&since=1h", en.AgentID, url.QueryEscape(`C:\Program Files\Chrome\chrome.exe`)), &rep); code != 200 || rep.Program.KnownSource != "builtin" {
+		t.Fatalf("explain back to builtin: http %d %+v", code, rep.Program)
 	}
 	// Per-agent activity for the window.
 	var act db.AgentActivity

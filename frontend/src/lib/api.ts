@@ -46,7 +46,11 @@ export interface AgentActivity {
 export interface AgentRetention { conn_days: number; stale_agent_days: number }
 export interface AgentBuild { target: string; file: string; size: number; sha256: string; built: string }
 export interface EnrollToken { enroll_token: string; expires_at: string; server_url: string; tls_required: boolean; ca_fingerprint_sha256?: string; ca_spki_sha256?: string }
-export interface ProcessStat { exe: string; name: string; user: string; container: string; sha256: string; conns: number; bytes: number; peers: number; ports: number; last_seen: string; top_peers: string[] }
+export interface ProcessStat { host?: string; exe: string; name: string; user: string; container: string; sha256: string; conns: number; bytes: number; peers: number; ports: number; last_seen: string; top_peers: string[] }
+export interface KBEntry {
+  id: number; match_kind: 'name' | 'path' | 'hash'; pattern: string; title: string; category: string; description: string
+  expected: string; verify: string[]; risk: string; note: string; created_by: string; created_at: string; updated_at: string
+}
 export interface ExplainKnown { title: string; category: string; description: string; expected: string; verify?: string[]; risk?: string }
 export interface ExplainDestination {
   dst: string; port: number; proto: string; service?: string; conns: number; bytes: number; first: string; last: string
@@ -57,7 +61,8 @@ export interface ExplainDestination {
 }
 export interface ExplainReport {
   program: { name: string; exe: string; user: string; container?: string; os?: string; machine?: string; hashes: string[]; hosts: string[]; agents: number; conns: number; destinations: number
-    first_seen: string | null; last_seen: string | null; first_in_window: string | null; pids: number[]; cmdline?: string; known: ExplainKnown | null }
+    first_seen: string | null; last_seen: string | null; first_in_window: string | null; pids: number[]; cmdline?: string; known: ExplainKnown | null
+    known_source?: 'user' | 'builtin'; known_id?: number }
   destinations: ExplainDestination[]
   signals: { level: 'info' | 'warn' | 'critical'; text: string }[]
   assessment: { level: 'expected' | 'review' | 'suspicious'; summary: string }
@@ -221,9 +226,13 @@ export const api = {
     request<Agent>(`/api/v1/agents/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, note }) }),
   revokeAgent: (id: number) => request<{ ok: boolean }>(`/api/v1/agents/${id}/revoke`, { method: 'POST' }),
   deleteAgent: (id: number) => request<{ deleted: number }>(`/api/v1/agents/${id}`, { method: 'DELETE' }),
+  kb: () => request<{ items: KBEntry[] }>('/api/v1/kb'),
+  upsertKB: (e: Partial<KBEntry>) => request<KBEntry>('/api/v1/kb', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(e) }),
+  deleteKB: (id: number) => request<{ deleted: number }>(`/api/v1/kb/${id}`, { method: 'DELETE' }),
+  importKB: (entries: Partial<KBEntry>[]) => request<{ imported: number; skipped: string[] }>('/api/v1/kb/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entries) }),
   explainProgram: (scope: { agent?: number; host?: string }, p: { exe: string; user: string; container?: string }, r: Range) =>
     request<ExplainReport>(`/api/v1/explain/program${qs({ ...r, agent: scope.agent != null ? String(scope.agent) : undefined, host: scope.host, exe: p.exe, user: p.user, container: p.container || undefined })}`),
-  hostProcesses: (ip: string, r: Range) => request<{ items: ProcessStat[]; via: Record<string, string[]>; agents: number }>(`/api/v1/hosts/${encodeURIComponent(ip)}/processes${qs(r)}`),
+  hostProcesses: (ip: string, r: Range) => request<{ items: ProcessStat[]; via: Record<string, string[]>; agents: number; direction: 'from' | 'to' }>(`/api/v1/hosts/${encodeURIComponent(ip)}/processes${qs(r)}`),
   ipNotes: (ip: string) => request<{ items: IPNote[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`),
   addIPNote: (ip: string, body: string) =>
     request<IPNote>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) }),

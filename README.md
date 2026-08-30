@@ -315,6 +315,12 @@ destination's rDNS / learned names / ASN with an infrastructure class (CDN, clou
 threat-list and reputation status, who else on the LAN uses it, regular-timing (beacon-like)
 detection, a signals list with an overall assessment, and OS-specific commands to verify on the
 machine. `GET /api/v1/explain/program?agent=|host=&exe=&user=&container=&since=`.
+Extend the knowledge base yourself: *Add to knowledge base* in any Explain panel stores an entry
+matched by executable path (glob), program name (glob) or SHA-256 that takes precedence over the
+built-in list; manage/import/export them on the Rules page (`GET/POST /api/v1/kb`,
+`POST /api/v1/kb/import`, `DELETE /api/v1/kb/{id}`, `GET /api/v1/kb?export=1`). The panel also
+offers look-up links (Google, DuckDuckGo, VirusTotal by hash, GitHub code search, file.net for
+Windows names) — nothing is sent until you click.
 
 The analyzer image builds the agent for both targets in its `agent` stage (Rust; Linux as a fully
 static musl binary, Windows via mingw cross-compile — a few extra minutes on first build; `--build-arg WITH_AGENT=0` skips it, in which

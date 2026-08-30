@@ -227,6 +227,7 @@ ON CONFLICT (agent_id, minute, host, proto, dst, dst_port, exe, "user", containe
 
 // ProcessStat summarises one program's connections from a host in a window.
 type ProcessStat struct {
+	Host      string    `json:"host,omitempty"` // set by ProcessesTowards: the local machine the program ran on
 	Exe       string    `json:"exe"`
 	Name      string    `json:"name"`
 	User      string    `json:"user"`
@@ -273,12 +274,18 @@ FROM c ORDER BY conns DESC LIMIT $4`, host, w.Since, w.Until, limit)
 	return out, rows.Err()
 }
 
-// ProcessesForPeers maps each peer of host to the programs that talked to it in the window
-// (for the "via" column on host pages).
+// ProcessesForPeers maps each peer of an address to the programs behind the connections, in
+// both directions: programs on this host per destination, and — when the page is an external
+// address — programs on each local machine that contacted it (the "via" column on host pages).
 func (d *DB) ProcessesForPeers(ctx context.Context, host string, w Window) (map[string][]string, error) {
 	rows, err := d.Pool.Query(ctx, `
-SELECT host(dst), name, "user", container, SUM(count) AS n FROM endpoint_conns
-WHERE host = $1::inet AND minute >= $2 AND minute < $3 GROUP BY dst, name, "user", container ORDER BY dst, n DESC`, host, w.Since, w.Until)
+SELECT peer, name, "user", container, SUM(n) AS n FROM (
+  SELECT host(dst) AS peer, name, "user", container, SUM(count) AS n FROM endpoint_conns
+  WHERE host = $1::inet AND minute >= $2 AND minute < $3 GROUP BY dst, name, "user", container
+  UNION ALL
+  SELECT host(host) AS peer, name, "user", container, SUM(count) AS n FROM endpoint_conns
+  WHERE dst = $1::inet AND minute >= $2 AND minute < $3 GROUP BY host, name, "user", container
+) x GROUP BY peer, name, "user", container ORDER BY peer, n DESC`, host, w.Since, w.Until)
 	if err != nil {
 		return nil, err
 	}
@@ -293,6 +300,36 @@ WHERE host = $1::inet AND minute >= $2 AND minute < $3 GROUP BY dst, name, "user
 		if len(out[dst]) < 3 {
 			out[dst] = append(out[dst], procLabel(name, user, container))
 		}
+	}
+	return out, rows.Err()
+}
+
+// ProcessesTowards lists programs on local machines that contacted an address (external pages).
+func (d *DB) ProcessesTowards(ctx context.Context, dst string, w Window, limit int) ([]ProcessStat, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.Pool.Query(ctx, `
+SELECT host(host), exe, MAX(name), "user", container, MAX(sha256), SUM(count), SUM(bytes), COUNT(DISTINCT dst_port), MAX(minute),
+       ARRAY(SELECT host(dst) || ':' || dst_port FROM endpoint_conns e WHERE e.dst = $1::inet AND e.host = c.host AND e.exe = c.exe AND e."user" = c."user" AND e.container = c.container
+             AND e.minute >= $2 AND e.minute < $3 GROUP BY dst, dst_port ORDER BY SUM(count) DESC LIMIT 3)
+FROM endpoint_conns c WHERE dst = $1::inet AND minute >= $2 AND minute < $3
+GROUP BY host, exe, "user", container ORDER BY SUM(count) DESC LIMIT $4`, dst, w.Since, w.Until, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ProcessStat{}
+	for rows.Next() {
+		var p ProcessStat
+		if err := rows.Scan(&p.Host, &p.Exe, &p.Name, &p.User, &p.Container, &p.SHA256, &p.Conns, &p.Bytes, &p.Ports, &p.LastSeen, &p.TopPeers); err != nil {
+			return nil, err
+		}
+		p.Peers = 1
+		if p.TopPeers == nil {
+			p.TopPeers = []string{}
+		}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

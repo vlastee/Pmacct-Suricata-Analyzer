@@ -43,8 +43,9 @@
   let procs = $state<ProcessStat[]>([])
   let via = $state<Record<string, string[]>>({})
   let agentCount = $state(0)
+  let procDirection = $state<'from' | 'to'>('from')
   async function loadProcs() {
-    try { const r = await api.hostProcesses(ip, currentRange()); procs = r.items; via = r.via; agentCount = r.agents } catch { procs = []; via = {}; agentCount = 0 }
+    try { const r = await api.hostProcesses(ip, currentRange()); procs = r.items; via = r.via; agentCount = r.agents; procDirection = r.direction } catch { procs = []; via = {}; agentCount = 0 }
   }
   $effect(() => { void reloadKey; void ip; void router.route.query.toString(); loadProcs() })
   let explainReport = $state<ExplainReport | null>(null)
@@ -52,7 +53,7 @@
   let explainMsg = $state('')
   async function explain(p: ProcessStat) {
     explainBusy = p.exe + p.user + p.container; explainReport = null; explainMsg = ''
-    try { explainReport = await api.explainProgram({ host: ip }, { exe: p.exe, user: p.user, container: p.container }, currentRange()) } catch (e: any) { explainMsg = e.message } finally { explainBusy = null }
+    try { explainReport = await api.explainProgram({ host: p.host || ip }, { exe: p.exe, user: p.user, container: p.container }, currentRange()) } catch (e: any) { explainMsg = e.message } finally { explainBusy = null }
   }
   // notes journal
   let notes = $state<IPNote[]>([])
@@ -199,18 +200,19 @@
     {/if}
     {#if procs.length}
       <div class="card overflow">
-        <h3>Programs <span class="muted">· from the endpoint agent</span></h3>
+        <h3>Programs <span class="muted">· {procDirection === 'to' ? 'that contacted this address, from the endpoint agents' : 'from the endpoint agent'}</span></h3>
         <table>
-          <thead><tr><th>Program</th><th>Container</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">Peers</th><th>Top destinations</th><th>Last</th><th></th></tr></thead>
+          <thead><tr>{#if procDirection === 'to'}<th>From</th>{/if}<th>Program</th><th>Container</th><th>User</th><th class="num">Conns</th><th class="num">Bytes</th><th class="num">{procDirection === 'to' ? 'Ports' : 'Peers'}</th><th>{procDirection === 'to' ? 'Ports used' : 'Top destinations'}</th><th>Last</th><th></th></tr></thead>
           <tbody>
-            {#each procs as p, i (i + '|' + p.exe + '|' + p.user + '|' + p.container)}
+            {#each procs as p, i (i + '|' + (p.host ?? '') + '|' + p.exe + '|' + p.user + '|' + p.container)}
               <tr>
+                {#if procDirection === 'to'}<td><IPLabel ip={p.host ?? ''} local={true} /></td>{/if}
                 <td title={p.exe + (p.sha256 ? '\nsha256 ' + p.sha256 : '')}><strong>{p.name || p.exe || '(unknown process)'}</strong><div class="small muted mono" style="max-width:320px; overflow:hidden; text-overflow:ellipsis">{p.exe || 'socket owner could not be resolved'}</div></td>
                 <td class="small mono">{p.container || '–'}</td>
                 <td class="small">{p.user || '–'}</td>
                 <td class="num">{fmtCompact(p.conns)}</td>
                 <td class="num">{p.bytes ? fmtBytes(p.bytes) : '–'}</td>
-                <td class="num">{p.peers}</td>
+                <td class="num">{procDirection === 'to' ? p.ports : p.peers}</td>
                 <td class="small mono">{p.top_peers.join(', ')}</td>
                 <td class="small" title={fmtTime(p.last_seen)}>{fmtAgo(p.last_seen)}</td>
                 <td class="num"><button class="small" onclick={() => explain(p)} disabled={explainBusy !== null}>{explainBusy === p.exe + p.user + p.container ? '…' : 'Explain'}</button></td>
@@ -219,7 +221,7 @@
           </tbody>
         </table>
         {#if explainMsg}<div class="small error">{explainMsg}</div>{/if}
-        {#if explainReport}<ExplainPanel report={explainReport} onclose={() => (explainReport = null)} />{/if}
+        {#if explainReport}<ExplainPanel report={explainReport} onclose={() => (explainReport = null)} onchanged={() => { const r = explainReport; if (r) explain({ exe: r.program.exe, user: r.program.user, container: r.program.container ?? '' } as ProcessStat) }} />{/if}
       </div>
     {/if}
     <div class="card" id="notes">
