@@ -526,6 +526,19 @@ func TestIPNotes(t *testing.T) {
 	}
 }
 
+func TestTLSInfoDisabled(t *testing.T) {
+	e := setup(t)
+	var info struct {
+		Enabled bool `json:"enabled"`
+	}
+	if code := e.get(t, "/api/v1/tls/info", &info); code != 200 || info.Enabled {
+		t.Fatalf("tls info: http %d %+v", code, info)
+	}
+	if code := e.get(t, "/api/v1/tls/ca", nil); code != 404 {
+		t.Errorf("ca without tls: http %d, want 404", code)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

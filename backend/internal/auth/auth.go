@@ -176,17 +176,23 @@ func (s *Service) maybeLock(ctx context.Context, ip, username, ua string) {
 	}
 }
 
+// secure marks the cookie Secure when configured, or when this request arrived over TLS
+// (the built-in HTTPS listener) so an https session never leaks over the plain listener.
+func (s *Service) secure(r *http.Request) bool {
+	return s.Cfg.CookieSecure || (r != nil && r.TLS != nil)
+}
+
 // SetCookie writes the session cookie.
-func (s *Service) SetCookie(w http.ResponseWriter, token string) {
+func (s *Service) SetCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: s.Cfg.CookieName, Value: token, Path: "/", HttpOnly: true, Secure: s.Cfg.CookieSecure,
+		Name: s.Cfg.CookieName, Value: token, Path: "/", HttpOnly: true, Secure: s.secure(r),
 		SameSite: http.SameSiteLaxMode, MaxAge: int(s.Cfg.SessionTTL.Seconds()),
 	})
 }
 
 // ClearCookie expires the session cookie.
-func (s *Service) ClearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: s.Cfg.CookieName, Value: "", Path: "/", HttpOnly: true, Secure: s.Cfg.CookieSecure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+func (s *Service) ClearCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: s.Cfg.CookieName, Value: "", Path: "/", HttpOnly: true, Secure: s.secure(r), SameSite: http.SameSiteLaxMode, MaxAge: -1})
 }
 
 // Token reads the session token from the request.
@@ -235,7 +241,7 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 		}
 		path := r.URL.Path
 		// Public: health, the login endpoint, and everything that is not the API (the SPA shell/assets).
-		if path == "/healthz" || path == "/api/v1/auth/login" || !strings.HasPrefix(path, "/api/") {
+		if path == "/healthz" || path == "/api/v1/auth/login" || strings.HasPrefix(path, "/api/v1/tls/") || !strings.HasPrefix(path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}

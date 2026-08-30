@@ -12,9 +12,16 @@ import (
 
 // Config holds all runtime settings for the analyzer.
 type Config struct {
-	ListenAddr  string
-	DatabaseURL string
-	StaticDir   string
+	ListenAddr string
+	// Built-in HTTPS: when TLSListenAddr is set the server also serves TLS there with an internal
+	// CA (generated on first start, stored in the database) for TLSHosts, or with TLSCertFile/
+	// TLSKeyFile when both are given.
+	TLSListenAddr string
+	TLSHosts      []string
+	TLSCertFile   string
+	TLSKeyFile    string
+	DatabaseURL   string
+	StaticDir     string
 
 	// LocalNetworks are the CIDR prefixes considered "local"/internal.
 	LocalNetworks []netip.Prefix
@@ -218,6 +225,9 @@ const DefaultLocalNetworks = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/
 func Load() (*Config, error) {
 	c := &Config{
 		ListenAddr:    env("LISTEN_ADDR", ":8080"),
+		TLSListenAddr: env("TLS_LISTEN_ADDR", ""),
+		TLSCertFile:   env("TLS_CERT_FILE", ""),
+		TLSKeyFile:    env("TLS_KEY_FILE", ""),
 		DatabaseURL:   env("DATABASE_URL", "postgres://pmacct:pmacctpass@10.0.0.210:55432/pmacct?sslmode=disable"),
 		StaticDir:     env("STATIC_DIR", "../frontend/dist"),
 		EnrichEnabled: envBool("ENRICH_ENABLED", true),
@@ -337,6 +347,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	c.PublicURL = strings.TrimRight(env("PUBLIC_URL", ""), "/")
+	for _, h := range strings.Split(env("TLS_HOSTS", ""), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			c.TLSHosts = append(c.TLSHosts, h)
+		}
+	}
 
 	c.AuthEnabled = envBool("AUTH_ENABLED", true)
 	c.AuthAdminUser = env("AUTH_ADMIN_USER", "admin")

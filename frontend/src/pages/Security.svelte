@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type LoginActivity, type AttemptStat, type IPRule, type AuthUser } from '../lib/api'
+  import { api, type TLSInfo, type LoginActivity, type AttemptStat, type IPRule, type AuthUser } from '../lib/api'
   import { auth } from '../lib/auth.svelte'
   import { fmtTime, fmtAgo } from '../lib/format'
   import Loading from '../lib/components/Loading.svelte'
@@ -60,10 +60,40 @@
     if (!confirm(`Delete user ${u.username}?`)) return
     try { await api.deleteUser(u.id); await load() } catch (e: any) { msg = e.message }
   }
+  let tls = $state<TLSInfo | null>(null)
+  $effect(() => { api.tlsInfo().then(t => (tls = t)).catch(() => (tls = null)) })
 </script>
 
 <Loading {error} />
 {#if msg}<div class="card small" style="margin-bottom:1rem">{msg}</div>{/if}
+
+<div class="card" style="margin-bottom:1rem">
+  <h3>TLS {#if tls?.enabled}<span class="badge good">https on {tls.addr}</span>{:else}<span class="badge">off</span>{/if}</h3>
+  {#if tls?.enabled && tls.ca_fingerprint_sha256}
+    <div class="small" style="margin-bottom:.4rem">Built-in HTTPS with an internal CA. Import the CA once and browsers stop warning; agents pin the SPKI hash.
+      {#if tls.url}<a href={tls.url} style="margin-left:.4rem">open {tls.url} →</a>{/if}</div>
+    <div class="grid cols-2 small">
+      <div>
+        <div><span class="muted">CA</span> {tls.ca_subject} <span class="muted">· valid until {fmtTime(tls.ca_not_after)}</span></div>
+        <div><span class="muted">fingerprint (SHA-256)</span> <span class="mono" style="word-break:break-all">{tls.ca_fingerprint_sha256}</span></div>
+        <div><span class="muted">SPKI pin</span> <span class="mono">{tls.ca_spki_sha256}</span></div>
+        <div><span class="muted">certificate for</span> <span class="mono">{tls.hosts?.join(', ')}</span> <span class="muted">· renews automatically, expires {fmtTime(tls.leaf_not_after)}</span></div>
+        <div style="margin-top:.4rem"><a class="primary" href="/api/v1/tls/ca" download="pmacct-analyzer-ca.pem">⬇ Download CA certificate</a></div>
+      </div>
+      <div class="muted">
+        <div><b>Windows</b>: double-click the .pem → Install → <i>Trusted Root Certification Authorities</i>.</div>
+        <div><b>macOS</b>: open in Keychain Access → System → double-click → Trust: Always.</div>
+        <div><b>iOS/iPadOS</b>: AirDrop/mail the file → Settings → Profile Downloaded → Install, then Settings → General → About → Certificate Trust Settings → enable.</div>
+        <div><b>Android</b>: Settings → Security → Encryption &amp; credentials → Install a certificate → CA certificate.</div>
+        <div><b>Firefox</b>: Settings → Certificates → View → Authorities → Import (Firefox keeps its own store).</div>
+      </div>
+    </div>
+  {:else if tls?.enabled}
+    <div class="small muted">HTTPS on {tls.addr} using the certificate files from TLS_CERT_FILE / TLS_KEY_FILE.</div>
+  {:else}
+    <div class="small muted">Set <span class="mono">TLS_LISTEN_ADDR</span> (e.g. <span class="mono">:8091</span>) and the analyzer serves HTTPS itself with an internal CA — no reverse proxy needed.</div>
+  {/if}
+</div>
 
 <div class="grid cols-2">
   <div class="card overflow">

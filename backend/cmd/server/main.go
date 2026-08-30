@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
 	"github.com/deezave/pmacct-analyzer/backend/internal/suricata"
+	"github.com/deezave/pmacct-analyzer/backend/internal/tlsca"
 )
 
 func main() {
@@ -153,6 +155,44 @@ func main() {
 		defer cancel()
 		_ = hs.Shutdown(sctx)
 	}()
+
+	// Built-in HTTPS listener (internal CA, or a certificate file pair).
+	if cfg.TLSListenAddr != "" {
+		tcfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			pair, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+			if err != nil {
+				slog.Error("tls certificate files", "err", err)
+				os.Exit(1)
+			}
+			tcfg.Certificates = []tls.Certificate{pair}
+			slog.Info("https listening with certificate files", "addr", cfg.TLSListenAddr)
+		} else {
+			mgr, err := tlsca.New(ctx, database, cfg.TLSHosts)
+			if err != nil {
+				slog.Error("tls", "err", err)
+				os.Exit(1)
+			}
+			srv.TLS = mgr
+			tcfg = mgr.TLSConfig()
+			go mgr.Run(ctx)
+			info := mgr.Info()
+			slog.Info("https listening with internal CA", "addr", cfg.TLSListenAddr, "hosts", info.Hosts, "ca_fingerprint", info.CAFingerprint)
+		}
+		hts := &http.Server{Addr: cfg.TLSListenAddr, Handler: srv.Handler(), TLSConfig: tcfg, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = hts.Shutdown(sctx)
+		}()
+		go func() {
+			if err := hts.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("https server", "err", err)
+				os.Exit(1)
+			}
+		}()
+	}
 	slog.Info("listening", "addr", cfg.ListenAddr, "local_networks", cfg.LocalNetworksCIDR())
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server", "err", err)

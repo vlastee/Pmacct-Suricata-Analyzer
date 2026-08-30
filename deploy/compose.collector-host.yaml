@@ -42,6 +42,8 @@ services:
       SURICATA_LISTEN: ":5514"
       # Notifications: minimum severity delivered; configure a channel in analyzer.env.
       NOTIFY_MIN_SEVERITY: critical
+      TLS_LISTEN_ADDR: ":8091"     # built-in HTTPS (internal CA); TLS_HOSTS = the collector's IP/name
+      TLS_HOSTS: 10.0.0.210
       # Authentication is ON by default: first login is admin/admin and forces a password change.
       # network_mode: host sees the real client IP, so keep TRUST_PROXY off.
       AUTH_ENABLED: "true"

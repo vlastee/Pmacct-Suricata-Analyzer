@@ -27,6 +27,10 @@ export interface Alert {
   count: number; first_seen: string; last_seen: string; state: string; acked_at: string | null
   resolved_at: string | null; notified_at: string | null; host_excluded?: string; peer_excluded?: string
 }
+export interface TLSInfo {
+  enabled: boolean; addr?: string; url?: string; ca_subject?: string; ca_fingerprint_sha256?: string; ca_spki_sha256?: string
+  ca_not_after?: string; hosts?: string[]; leaf_not_after?: string; leaf_issued_at?: string
+}
 export interface IPNote { id: number; ip: string; body: string; author: string; created_at: string }
 export interface Exclusion { id: number; pattern: string; kind: 'ip' | 'cidr' | 'name'; note: string; created_at: string }
 export interface AlertSummary { open: number; acked: number; critical: number; warning: number; info: number; by_rule: Record<string, number>; last_24h: number }
@@ -163,6 +167,7 @@ export const api = {
   idsEvent: (id: number) => request<IDSEvent>(`/api/v1/ids/events/${id}`),
   ipNames: (ip: string) => request<{ items: IPName[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/names`),
   systemStatus: () => request<any>('/api/v1/system/status'),
+  tlsInfo: () => request<TLSInfo>('/api/v1/tls/info'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
   ipNotes: (ip: string) => request<{ items: IPNote[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`),
   addIPNote: (ip: string, body: string) =>

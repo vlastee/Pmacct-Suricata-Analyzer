@@ -74,14 +74,18 @@ log "building application image $IMAGE"
 podman build -q --format docker -t "$IMAGE" -f "$ROOT/Containerfile" "$ROOT" >/dev/null
 
 log "starting application container"
-podman run -d --name "$APP" --network "$NET" -p 127.0.0.1::8080 \
+podman run -d --name "$APP" --network "$NET" -p 127.0.0.1::8080 -p 127.0.0.1::8091 \
   -e DATABASE_URL="postgres://pmacct:pmacctpass@${PG}:5432/pmacct?sslmode=disable" \
   -e LOCAL_NETWORKS="192.168.1.0/24" \
   -e ENRICH_ENABLED=false \
   -e AUTH_ENABLED=false \
+  -e TLS_LISTEN_ADDR=":8091" \
+  -e TLS_HOSTS="127.0.0.1,localhost" \
   "$IMAGE" >/dev/null
 APP_PORT="$(podman port "$APP" 8080/tcp | head -n1 | sed 's/.*://')"
+TLS_PORT="$(podman port "$APP" 8091/tcp | head -n1 | sed 's/.*://')"
 BASE="http://127.0.0.1:${APP_PORT}"
+TLS_BASE="https://127.0.0.1:${TLS_PORT}"
 for i in $(seq 1 60); do
   if curl -sf "$BASE/healthz" >/dev/null 2>&1; then break; fi
   sleep 1
@@ -118,6 +122,13 @@ check "auth/me reports disabled"             bash -c "json /api/v1/auth/me | gre
 check "migrations created users table"       bash -c "podman exec $PG psql -U pmacct -d pmacct -Atc \"select count(*) from information_schema.tables where table_name='users'\" | grep -qx 1"
 check "healthz reachable inside container"   bash -c "podman exec $APP curl -sf http://127.0.0.1:8080/healthz | grep -q '\"status\":\"ok\"'"
 check "image HEALTHCHECK passes"             podman healthcheck run "$APP"
+# Built-in HTTPS: the CA downloaded over plain HTTP verifies the TLS listener; without it, TLS fails.
+CA_FILE="$(mktemp)"; trap 'rm -f "$CA_FILE"' EXIT
+check "tls/info reports internal CA"         bash -c "json /api/v1/tls/info | grep -q '\"internal_ca\":true'"
+check "CA certificate downloadable"           bash -c "curl -sf '$BASE/api/v1/tls/ca' -o '$CA_FILE' && grep -q 'BEGIN CERTIFICATE' '$CA_FILE'"
+check "https verifies with the CA"            bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/healthz' | grep -q '\"status\":\"ok\"'"
+check "https rejected without the CA"         bash -c "! curl -sf '$TLS_BASE/healthz' >/dev/null 2>&1"
+check "https serves the API"                  bash -c "curl -sf --cacert '$CA_FILE' '$TLS_BASE/api/v1/tls/info' | grep -q '\"enabled\":true'"
 
 if [ "$fail" != 0 ]; then
   echo "--- app logs ---" >&2; podman logs "$APP" >&2

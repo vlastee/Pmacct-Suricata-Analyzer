@@ -110,6 +110,9 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 |---|---|---|
 | `DATABASE_URL` | `postgres://pmacct:pmacctpass@10.0.0.210:55432/pmacct?sslmode=disable` | pmacct database |
 | `LISTEN_ADDR` | `:8080` | HTTP listen address |
+| `TLS_LISTEN_ADDR` | – | also serve HTTPS here (e.g. `:8091`) with the built-in internal CA — see *HTTPS* |
+| `TLS_HOSTS` | this machine's hostname + addresses | IPs / names the server certificate covers |
+| `TLS_CERT_FILE` / `TLS_KEY_FILE` | – | use your own certificate instead of the internal CA |
 | `STATIC_DIR` | `../frontend/dist` | built SPA to serve |
 | `LOCAL_NETWORKS` | RFC1918 + loopback + link-local + ULA | Comma-separated CIDRs/IPs treated as *local*. **Add the pmacct host's own public address if it captures on the WAN side** (e.g. `174.54.200.232/32` for this deployment), otherwise all traffic looks external. |
 | `ENRICH_ENABLED` | `true` | run the background enrichment workers |
@@ -270,6 +273,17 @@ they're recorded and delivered when the window ends.
 
 Per-host **rollups** (`host_hourly`, `host_peer_daily`) are maintained by the worker and kept for
 months, so baselines and "new destination" survive the 7-day raw-flow retention.
+
+## HTTPS
+
+Set `TLS_LISTEN_ADDR` (the deploy compose uses `:8091`) and the analyzer serves HTTPS itself — no
+proxy. On first start it generates an **internal CA** (10 years) and a server certificate for
+`TLS_HOSTS` (397 days, renewed automatically, re-issued when the host list changes); both live in
+the database, so rebuilds and moves keep the same identity. Import the CA once — **Security → TLS**
+has the download and the fingerprint, or fetch `GET /api/v1/tls/ca` — and browsers stop warning;
+agents pin `ca_spki_sha256` from `GET /api/v1/tls/info`. Plain HTTP stays available on
+`LISTEN_ADDR` for the LAN; set `PUBLIC_URL` to the https address so notification links use it.
+Prefer your own certificate? Point `TLS_CERT_FILE` / `TLS_KEY_FILE` at it.
 
 ## Authentication & access control
 

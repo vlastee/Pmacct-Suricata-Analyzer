@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
 	"github.com/deezave/pmacct-analyzer/backend/internal/suricata"
+	"github.com/deezave/pmacct-analyzer/backend/internal/tlsca"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -37,6 +39,7 @@ type Server struct {
 	Feeds    *feeds.Fetcher     // nil when no feeds configured
 	Notifier *notify.Dispatcher // nil when no channels configured
 	Suricata *suricata.Listener // nil when not listening
+	TLS      *tlsca.Manager     // built-in HTTPS identity (nil when disabled or using certificate files)
 	Auth     *auth.Service      // nil disables authentication
 	Now      func() time.Time
 }
@@ -48,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /api/v1/tls/info", s.tlsInfo)
+	mux.HandleFunc("GET /api/v1/tls/ca", s.tlsCA)
 	mux.HandleFunc("GET /api/v1/meta", s.meta)
 	mux.HandleFunc("GET /api/v1/overview", s.overview)
 	mux.HandleFunc("GET /api/v1/timeseries", s.timeseries)
@@ -1187,6 +1192,69 @@ func (s *Server) notifySettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Notifier.Stats())
 }
 
+// ---- built-in HTTPS ----
+
+// tlsInfo describes the HTTPS identity (public: browsers and agents need it before they can
+// trust the server). Fingerprints are not secrets.
+func (s *Server) tlsInfo(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{"enabled": s.Cfg != nil && s.Cfg.TLSListenAddr != "", "internal_ca": s.TLS != nil}
+	if s.Cfg != nil && s.Cfg.TLSListenAddr != "" {
+		out["addr"] = s.Cfg.TLSListenAddr
+		if s.TLS != nil {
+			info := s.TLS.Info()
+			out["ca_subject"], out["ca_fingerprint_sha256"], out["ca_spki_sha256"], out["ca_not_after"] = info.CASubject, info.CAFingerprint, info.CASPKI, info.CANotAfter
+			out["hosts"], out["leaf_not_after"], out["leaf_issued_at"] = info.Hosts, info.LeafNotAfter, info.LeafRenewedAt
+			out["url"] = tlsURL(s.Cfg.TLSListenAddr, info.Hosts, r.Host)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// tlsURL builds https://host:port from the listener and the certificate's hosts, preferring
+// the name the browser used when it is covered by the certificate.
+func tlsURL(addr string, hosts []string, reqHost string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		port = strings.TrimPrefix(addr, ":")
+	}
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		reqHost = h
+	}
+	pick := ""
+	for _, h := range hosts {
+		if h == strings.ToLower(reqHost) {
+			pick = h
+			break
+		}
+	}
+	if pick == "" {
+		for _, h := range hosts {
+			if h != "localhost" && h != "127.0.0.1" {
+				pick = h
+				break
+			}
+		}
+	}
+	if pick == "" {
+		pick = "localhost"
+	}
+	if strings.Contains(pick, ":") {
+		pick = "[" + pick + "]"
+	}
+	return "https://" + pick + ":" + port
+}
+
+// tlsCA serves the internal CA certificate (PEM) for import into browsers, phones and agents.
+func (s *Server) tlsCA(w http.ResponseWriter, r *http.Request) {
+	if s.TLS == nil {
+		writeErr(w, http.StatusNotFound, "built-in TLS is not enabled")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", `attachment; filename="pmacct-analyzer-ca.pem"`)
+	_, _ = w.Write(s.TLS.CAPEM())
+}
+
 // ---- per-IP notes ----
 
 func (s *Server) listIPNotes(w http.ResponseWriter, r *http.Request) {
@@ -1405,14 +1473,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.Auth.SetCookie(w, res.Token)
+	s.Auth.SetCookie(w, r, res.Token)
 	writeJSON(w, http.StatusOK, map[string]any{"user": res.User, "must_change_password": res.User.MustChangePassword})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if s.Auth != nil {
 		_ = s.DB.DeleteSession(r.Context(), s.Auth.Token(r))
-		s.Auth.ClearCookie(w)
+		s.Auth.ClearCookie(w, r)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
