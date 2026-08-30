@@ -6,7 +6,7 @@
 # (given out-of-band by the UI); everything after that is downloaded with that CA only, the
 # binary is checksum-verified, and the agent re-verifies --ca-pin at enrollment.
 set -euo pipefail
-SERVER=""; TOKEN=""; FP=""; PIN=""; CAPTURE="auto"; CMDLINE=""; SPOOL=""
+SERVER=""; TOKEN=""; FP=""; PIN=""; CAPTURE="auto"; CMDLINE=""; SPOOL=""; SPOOLMB=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --server) SERVER="$2"; shift 2 ;;
@@ -16,6 +16,7 @@ while [ $# -gt 0 ]; do
     --capture) CAPTURE="$2"; shift 2 ;;
     --send-cmdline) CMDLINE="--send-cmdline"; shift ;;
     --spool-dir) SPOOL="$2"; shift 2 ;;
+    --spool-max-mb) SPOOLMB="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +50,7 @@ if systemctl is-active --quiet pmacct-agent 2>/dev/null; then systemctl stop pma
 install -m 0755 "$TMP/pmacct-agent" /usr/local/bin/pmacct-agent
 PINARG=(); [ -n "$PIN" ] && PINARG=(--ca-pin "$PIN")
 SPOOLARG=(); [ -n "$SPOOL" ] && SPOOLARG=(--spool-dir "$SPOOL")
+[ -n "$SPOOLMB" ] && SPOOLARG+=(--spool-max-mb "$SPOOLMB")
 /usr/local/bin/pmacct-agent enroll --server "$SERVER" --token "$TOKEN" "${PINARG[@]}" --capture "$CAPTURE" $CMDLINE "${SPOOLARG[@]}"
 /usr/local/bin/pmacct-agent install
 echo "done — the agent should appear online on the Agents page within a minute"

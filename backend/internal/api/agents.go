@@ -20,14 +20,10 @@ import (
 // only over the TLS listener when one is configured — tokens must not cross the LAN in clear.
 
 const (
-	enrollTokenTTL   = 24 * time.Hour
-	maxAgentBatch    = 20000
-	agentBodyLimit   = 16 << 20
-	endpointConnKeep = 30 * 24 * time.Hour
+	enrollTokenTTL = 24 * time.Hour
+	maxAgentBatch  = 20000
+	agentBodyLimit = 16 << 20
 )
-
-// EndpointConnKeep is the retention of endpoint_conns (used by the scheduler).
-const EndpointConnKeep = endpointConnKeep
 
 func (s *Server) requireAgentTLS(w http.ResponseWriter, r *http.Request) bool {
 	if s.Cfg != nil && s.Cfg.TLSListenAddr != "" && r.TLS == nil {
@@ -228,6 +224,38 @@ func cleanIPs(in []string) []string {
 }
 
 // ---- admin-facing ----
+
+func (s *Server) agentSettings(w http.ResponseWriter, r *http.Request) {
+	ret, err := s.DB.GetAgentRetention(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ret)
+}
+
+// setAgentSettings stores the retention and applies it right away, reporting what was removed.
+func (s *Server) setAgentSettings(w http.ResponseWriter, r *http.Request) {
+	var ret db.AgentRetention
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&ret); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := ret.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.DB.SetAgentRetention(r.Context(), ret); err != nil {
+		s.fail(w, err)
+		return
+	}
+	conns, agents, err := s.DB.PruneAgentData(r.Context(), ret)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"settings": ret, "deleted_rows": conns, "deleted_agents": agents})
+}
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	items, err := s.DB.ListAgents(r.Context())

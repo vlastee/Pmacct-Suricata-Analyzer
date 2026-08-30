@@ -28,6 +28,13 @@ pub struct Config {
     /// /var/lib/pmacct-agent/spool or %ProgramData%\pmacct-agent\spool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spool_dir: Option<String>,
+    /// Cap on spooled data on disk, in MiB (default 50). Oldest batches are dropped beyond it.
+    #[serde(default = "default_spool_max_mb")]
+    pub spool_max_mb: u64,
+    /// Cap on distinct (minute, program, destination) keys held in memory between uploads
+    /// (default 50 000; bounds memory and the size of one batch).
+    #[serde(default = "default_max_keys")]
+    pub max_keys: usize,
     /// Local networks (from enrollment); connections to peers outside them are what matters,
     /// but everything non-loopback is reported so LAN-to-LAN scans are attributable too.
     #[serde(default)]
@@ -42,6 +49,12 @@ fn default_send() -> u64 {
 }
 fn default_capture() -> String {
     "auto".into()
+}
+fn default_spool_max_mb() -> u64 {
+    50
+}
+fn default_max_keys() -> usize {
+    50_000
 }
 
 impl Config {
@@ -122,7 +135,7 @@ mod tests {
 
     #[test]
     fn spool_dir_precedence() {
-        let base = Config { server: "https://x".into(), agent_id: 1, token: "t".into(), ca_pem: None, interval_secs: 1, send_every_secs: 30, send_cmdline: false, capture: "auto".into(), spool_dir: None, local_networks: vec![] };
+        let base = Config { server: "https://x".into(), agent_id: 1, token: "t".into(), ca_pem: None, interval_secs: 1, send_every_secs: 30, send_cmdline: false, capture: "auto".into(), spool_dir: None, spool_max_mb: 50, max_keys: 50_000, local_networks: vec![] };
         // Explicit config wins over everything.
         let mut c = base.clone();
         c.spool_dir = Some("/mnt/fast/spool".into());
@@ -137,5 +150,8 @@ mod tests {
         assert_eq!(back.spool_dir, None);
         let with: Config = toml::from_str(&format!("{toml_text}spool_dir = \"/data/spool\"\n")).unwrap();
         assert_eq!(with.spool_dir(), PathBuf::from("/data/spool"));
+        // Older config files without the caps get the defaults.
+        let old: Config = toml::from_str("server = \"https://x\"\nagent_id = 1\ntoken = \"t\"\n").unwrap();
+        assert_eq!((old.spool_max_mb, old.max_keys), (50, 50_000));
     }
 }

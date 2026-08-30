@@ -14,7 +14,8 @@ function Install-PmacctAgent {
         [string]$CaPin = "",
         [string]$Capture = "auto",
         [switch]$SendCmdline,
-        [string]$SpoolDir = ""
+        [string]$SpoolDir = "",
+        [int]$SpoolMaxMb = 0
     )
     $ErrorActionPreference = "Stop"
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -55,6 +56,7 @@ function Install-PmacctAgent {
     if ($CaPin) { $args += @("--ca-pin", $CaPin) }
     if ($SendCmdline) { $args += "--send-cmdline" }
     if ($SpoolDir) { $args += @("--spool-dir", $SpoolDir) }
+    if ($SpoolMaxMb -gt 0) { $args += @("--spool-max-mb", "$SpoolMaxMb") }
     & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "enrollment failed" }
     if ($svc) { & $exe uninstall | Out-Null }

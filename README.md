@@ -327,8 +327,10 @@ default `auto`):
 `sudo pmacct-agent snapshot --capture ebpf --seconds 10` shows live attributed connections — the
 quickest way to check the backend works on a machine.
 Batches upload every 30 s (gzip), are spooled on disk when the server is unreachable, and an empty
-batch every minute is the heartbeat shown on the Agents page. Data is kept 30 days
-(`endpoint_conns`). API: `POST /api/v1/agent/enroll`, `POST /api/v1/agent/events` (bearer token),
+batch every minute is the heartbeat shown on the Agents page. Data is kept **15 days** by default
+(*⚙ retention* on the Agents page: connection-data days, and optionally forget agents silent for N
+days; `GET/PUT /api/v1/agents/settings`). On the machine, the spool is capped at **50 MiB** by
+default (`--spool-max-mb`, builder field *spool cap*). API: `POST /api/v1/agent/enroll`, `POST /api/v1/agent/events` (bearer token),
 admin `GET/POST/PUT/DELETE /api/v1/agents…`, `GET /api/v1/hosts/{ip}/processes`.
 
 ## HTTPS

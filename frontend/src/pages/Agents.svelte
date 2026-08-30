@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Agent, type AgentBuild, type EnrollToken } from '../lib/api'
+  import { api, type Agent, type AgentBuild, type AgentRetention, type EnrollToken } from '../lib/api'
   import { fmtAgo, fmtTime, fmtNum, fmtBytes } from '../lib/format'
   import Loading from '../lib/components/Loading.svelte'
   import IPLabel from '../lib/components/IPLabel.svelte'
@@ -14,12 +14,28 @@
   let editName = $state('')
   let editNote = $state('')
 
+  // retention
+  let showRetention = $state(false)
+  let retention = $state<AgentRetention | null>(null)
+  let retMsg = $state('')
+  $effect(() => { if (showRetention && !retention) api.agentSettings().then(r => (retention = r)).catch(e => (retMsg = e.message)) })
+  async function saveRetention() {
+    if (!retention) return
+    retMsg = 'saving…'
+    try {
+      const r = await api.setAgentSettings(retention)
+      retention = r.settings
+      retMsg = `saved · deleted ${r.deleted_rows} rows${r.deleted_agents ? `, ${r.deleted_agents} stale agents` : ''}`
+      await load()
+    } catch (e: any) { retMsg = e.message }
+  }
   // installer builder
   let os = $state<'linux' | 'windows'>('linux')
   let name = $state('')
   let capture = $state('auto')
   let sendCmdline = $state(false)
   let spoolDir = $state('')
+  let spoolMaxMb = $state(50)
   let token = $state<EnrollToken | null>(null)
   let tokenOS = $state<'linux' | 'windows'>('linux')
 
@@ -62,10 +78,10 @@
     const fp = t.ca_fingerprint_sha256 ?? ''
     const pin = t.ca_spki_sha256 ?? ''
     if (tokenOS === 'linux') {
-      const flags = [`--server ${t.server_url}`, `--token ${t.enroll_token}`, fp && `--ca-fingerprint ${fp}`, pin && `--ca-pin ${pin}`, `--capture ${capture}`, sendCmdline && '--send-cmdline', spoolDir.trim() && `--spool-dir '${spoolDir.trim()}'`].filter(Boolean).join(' ')
+      const flags = [`--server ${t.server_url}`, `--token ${t.enroll_token}`, fp && `--ca-fingerprint ${fp}`, pin && `--ca-pin ${pin}`, `--capture ${capture}`, sendCmdline && '--send-cmdline', spoolDir.trim() && `--spool-dir '${spoolDir.trim()}'`, spoolMaxMb !== 50 && `--spool-max-mb ${spoolMaxMb}`].filter(Boolean).join(' ')
       return `curl -sk ${t.server_url}/api/v1/agent/install.sh | sudo bash -s -- ${flags}`
     }
-    const args = [`-Server ${t.server_url}`, `-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline', spoolDir.trim() && `-SpoolDir '${spoolDir.trim()}'`].filter(Boolean).join(' ')
+    const args = [`-Server ${t.server_url}`, `-Token ${t.enroll_token}`, fp && `-CaFingerprint ${fp}`, pin && `-CaPin ${pin}`, `-Capture ${capture === 'ebpf' ? 'auto' : capture}`, sendCmdline && '-SendCmdline', spoolDir.trim() && `-SpoolDir '${spoolDir.trim()}'`, spoolMaxMb !== 50 && `-SpoolMaxMb ${spoolMaxMb}`].filter(Boolean).join(' ')
     return `[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; iex (iwr -UseBasicParsing ${t.server_url}/api/v1/agent/install.ps1).Content; Install-PmacctAgent ${args}`
   })
   let manualEnroll = $derived(token ? `pmacct-agent enroll --server ${token.server_url} --token ${token.enroll_token}${token.ca_spki_sha256 ? ` --ca-pin ${token.ca_spki_sha256}` : ''} --capture ${capture}${sendCmdline ? ' --send-cmdline' : ''}${spoolDir.trim() ? ` --spool-dir '${spoolDir.trim()}'` : ''}` : '')
@@ -88,7 +104,8 @@
       </select>
     </label>
     <label class="row" style="gap:.3rem"><input type="checkbox" bind:checked={sendCmdline} /> send command lines</label>
-    <input bind:value={spoolDir} size="28" placeholder={os === 'linux' ? 'spool dir (default /var/lib/pmacct-agent/spool)' : 'spool dir (default %ProgramData%\\pmacct-agent\\spool)'} title="Where batches are kept while the server is unreachable — put it on the disk you prefer; bounded to 500 batches" />
+    <input bind:value={spoolDir} size="28" placeholder={os === 'linux' ? 'spool dir (default /var/lib/pmacct-agent/spool)' : 'spool dir (default %ProgramData%\\pmacct-agent\\spool)'} title="Where batches are kept while the server is unreachable — put it on the disk you prefer" />
+    <label class="row" style="gap:.3rem" title="Cap on spooled data on disk; oldest batches are dropped beyond it">spool cap <input type="number" min="1" max="100000" bind:value={spoolMaxMb} style="width:5rem" /> MiB</label>
     <button type="submit" class="primary">Generate install command</button>
     {#if msg}<span class="small muted">{msg}</span>{/if}
   </form>
@@ -120,7 +137,18 @@
 </div>
 
 <div class="card overflow">
-  <h3>Agents <span class="muted">· {items.length}</span></h3>
+  <h3>Agents <span class="muted">· {items.length}</span> <button class="small" style="margin-left:.6rem" onclick={() => (showRetention = !showRetention)} title="How long agent data is kept">⚙ retention</button></h3>
+  {#if showRetention}
+    <div class="row small" style="gap:1rem; flex-wrap:wrap; margin-bottom:.8rem">
+      {#if retention}
+        <label class="row" style="gap:.3rem">keep connection data for <input type="number" min="0" max="3650" bind:value={retention.conn_days} style="width:4.5rem" /> days</label>
+        <label class="row" style="gap:.3rem">forget agents silent for <input type="number" min="0" max="3650" bind:value={retention.stale_agent_days} style="width:4.5rem" /> days</label>
+        <span class="muted">(0 = forever / never)</span>
+        <button class="primary small" onclick={saveRetention}>Save</button>
+        {#if retMsg}<span class="muted">{retMsg}</span>{/if}
+      {:else}<span class="muted">{retMsg || 'loading…'}</span>{/if}
+    </div>
+  {/if}
   <table>
     <thead><tr><th>Name</th><th>Host</th><th>Addresses</th><th>OS</th><th>Version</th><th>Capture</th><th class="num">Events</th><th class="num">Last batch</th><th class="num">Dropped</th><th>Last seen</th><th></th></tr></thead>
     <tbody>

@@ -58,6 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/agent/download/{target}", s.agentDownload)
 	mux.HandleFunc("GET /api/v1/agent/{script}", s.agentInstallScript) // install.sh / install.ps1
 	mux.HandleFunc("GET /api/v1/agents", s.adminOnly(s.listAgents))
+	mux.HandleFunc("GET /api/v1/agents/settings", s.adminOnly(s.agentSettings))
+	mux.HandleFunc("PUT /api/v1/agents/settings", s.adminOnly(s.setAgentSettings))
 	mux.HandleFunc("POST /api/v1/agents/enroll-tokens", s.adminOnly(s.createEnrollToken))
 	mux.HandleFunc("PUT /api/v1/agents/{id}", s.adminOnly(s.updateAgent))
 	mux.HandleFunc("POST /api/v1/agents/{id}/{action}", s.adminOnly(s.agentAdminAction))

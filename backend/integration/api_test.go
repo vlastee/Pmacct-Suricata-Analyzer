@@ -823,6 +823,60 @@ func TestAgentDistribution(t *testing.T) {
 	}
 }
 
+func TestAgentRetentionSettings(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM agents; DELETE FROM settings WHERE key = 'agent_retention'`)
+	t.Cleanup(func() {
+		_, _ = e.db.Pool.Exec(ctx, `DELETE FROM agents; DELETE FROM settings WHERE key = 'agent_retention'`)
+	})
+	var ret db.AgentRetention
+	e.get(t, "/api/v1/agents/settings", &ret)
+	if ret.ConnDays != 15 || ret.StaleAgentDays != 0 {
+		t.Fatalf("defaults: %+v", ret)
+	}
+	// One fresh agent with a 20-day-old row and a fresh row; one agent silent for 40 days.
+	var a1, a2 int64
+	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO agents (name, token_hash, last_seen) VALUES ('fresh', 'h1', now()) RETURNING id`).Scan(&a1); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO agents (name, token_hash, last_seen) VALUES ('stale', 'h2', now() - interval '40 days') RETURNING id`).Scan(&a2); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		agent int64
+		age   string
+	}{{a1, "20 days"}, {a1, "1 hour"}, {a2, "1 hour"}} {
+		if _, err := e.db.Pool.Exec(ctx, `INSERT INTO endpoint_conns (agent_id, minute, host, proto, dst, dst_port, exe) VALUES ($1, now() - $2::interval, '192.168.1.10', 'tcp', '8.8.8.8', 443, 'x')`, row.agent, row.age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var res struct {
+		Settings      db.AgentRetention `json:"settings"`
+		DeletedRows   int64             `json:"deleted_rows"`
+		DeletedAgents int64             `json:"deleted_agents"`
+	}
+	if code := e.send(t, "PUT", "/api/v1/agents/settings", map[string]any{"conn_days": 15, "stale_agent_days": 30}, &res); code != 200 {
+		t.Fatalf("put: http %d", code)
+	}
+	// 20-day row pruned; stale agent removed with its own row (cascade), fresh row survives.
+	if res.DeletedRows != 1 || res.DeletedAgents != 1 {
+		t.Fatalf("prune result: %+v", res)
+	}
+	var left int
+	_ = e.db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM endpoint_conns`).Scan(&left)
+	if left != 1 {
+		t.Errorf("rows left: %d, want 1", left)
+	}
+	if code := e.send(t, "PUT", "/api/v1/agents/settings", map[string]any{"conn_days": -1}, nil); code != 400 {
+		t.Errorf("bad settings: http %d, want 400", code)
+	}
+	e.get(t, "/api/v1/agents/settings", &ret)
+	if ret.StaleAgentDays != 30 {
+		t.Errorf("not persisted: %+v", ret)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

@@ -1,30 +1,43 @@
 //! On-disk spool for batches the server could not accept (offline, restart): one JSON file per
-//! batch, bounded in count; oldest are dropped first so the disk cannot fill.
+//! batch, bounded in count *and* bytes; oldest are dropped first so the disk cannot fill.
 use crate::model::EventsBatch;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 pub struct Spool {
     dir: PathBuf,
     max_files: usize,
+    max_bytes: u64,
 }
 
 impl Spool {
-    pub fn new(dir: PathBuf, max_files: usize) -> Self {
-        Self { dir, max_files }
+    pub fn new(dir: PathBuf, max_files: usize, max_bytes: u64) -> Self {
+        Self { dir, max_files, max_bytes: max_bytes.max(1) }
     }
 
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes
+    }
+
+    /// Store a batch, evicting the oldest files until both the count and the byte cap hold.
+    /// A single batch larger than the cap is refused (it would never fit).
     pub fn push(&self, batch: &EventsBatch) -> Result<()> {
         std::fs::create_dir_all(&self.dir).with_context(|| format!("create {}", self.dir.display()))?;
+        let data = serde_json::to_vec(batch)?;
+        if data.len() as u64 > self.max_bytes {
+            bail!("batch of {} bytes exceeds the spool cap of {} bytes; dropped", data.len(), self.max_bytes);
+        }
         let mut files = self.files()?;
-        while files.len() >= self.max_files {
+        let mut size: u64 = files.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        while !files.is_empty() && (files.len() >= self.max_files || size + data.len() as u64 > self.max_bytes) {
             let oldest = files.remove(0);
+            size = size.saturating_sub(std::fs::metadata(&oldest).map(|m| m.len()).unwrap_or(0));
             let _ = std::fs::remove_file(oldest);
         }
         let name = format!("{}-{:06}.json", chrono::Utc::now().format("%Y%m%dT%H%M%S%3f"), std::process::id() % 1_000_000);
         let path = self.dir.join(name);
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec(batch)?)?;
+        std::fs::write(&tmp, &data)?;
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
@@ -86,7 +99,7 @@ mod tests {
     fn round_trip_and_bound() {
         let dir = std::env::temp_dir().join(format!("pmacct-agent-spool-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let spool = Spool::new(dir.clone(), 2);
+        let spool = Spool::new(dir.clone(), 2, 1 << 20);
         let batch = |n: u64| EventsBatch { hostname: "h".into(), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![] };
         spool.push(&batch(1)).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -98,6 +111,26 @@ mod tests {
         assert_eq!(b.dropped, 2);
         spool.remove(&path);
         assert_eq!(spool.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn byte_cap_evicts_oldest_and_refuses_oversize() {
+        let dir = std::env::temp_dir().join(format!("pmacct-agent-spool-bytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let batch = |n: u64| EventsBatch { hostname: "h".repeat(40), version: "v".into(), ips: vec![], capture: "poll".into(), dropped: n, conns: vec![] };
+        let one = serde_json::to_vec(&batch(0)).unwrap().len() as u64;
+        // Room for two batches, not three.
+        let spool = Spool::new(dir.clone(), 100, one * 2 + one / 2);
+        for n in 1..=3 {
+            spool.push(&batch(n)).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(spool.len(), 2);
+        assert!(spool.size_bytes() <= spool.max_bytes());
+        assert_eq!(spool.peek().unwrap().unwrap().1.dropped, 2, "oldest evicted");
+        let tiny = Spool::new(dir.clone(), 100, 10);
+        assert!(tiny.push(&batch(9)).is_err(), "oversize batch refused");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
