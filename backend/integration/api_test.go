@@ -472,6 +472,60 @@ func TestExclusions(t *testing.T) {
 	}
 }
 
+func TestIPNotes(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	ip := "198.51.100.99"
+	_, _ = e.db.Pool.Exec(ctx, `DELETE FROM ip_notes WHERE ip = $1::inet`, ip)
+	var n db.IPNote
+	if code := e.send(t, "POST", "/api/v1/ips/"+ip+"/notes", map[string]any{"body": "  Vendor VPN concentrator, checked with Bob  "}, &n); code != 201 {
+		t.Fatalf("add note: http %d", code)
+	}
+	if n.IP != ip || n.Body != "Vendor VPN concentrator, checked with Bob" || n.ID == 0 {
+		t.Fatalf("note: %+v", n)
+	}
+	if code := e.send(t, "POST", "/api/v1/ips/"+ip+"/notes", map[string]any{"body": "   "}, nil); code != 400 {
+		t.Errorf("empty note: http %d, want 400", code)
+	}
+	e.send(t, "POST", "/api/v1/ips/"+ip+"/notes", map[string]any{"body": "second entry"}, nil)
+	var list struct {
+		Items []db.IPNote `json:"items"`
+	}
+	e.get(t, "/api/v1/ips/"+ip+"/notes", &list)
+	if len(list.Items) != 2 || list.Items[0].Body != "second entry" {
+		t.Fatalf("notes newest first: %+v", list.Items)
+	}
+	// The latest note reaches notifications for an address without a nickname note.
+	var mu sync.Mutex
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&got)
+	}))
+	defer srv.Close()
+	cfg := *e.cfg
+	cfg.NotifyWebhookURL, cfg.NotifyMinSeverity = srv.URL, "warning"
+	host := "10.0.0.5"
+	notify.NewDispatcher(e.db, &cfg, srv.Client()).Notify(ctx, []db.Alert{{ID: 9, Rule: "r", Severity: "warning", Host: &host, Peer: &ip, Title: "x"}})
+	mu.Lock()
+	body, _ := got["body"].(string)
+	mu.Unlock()
+	if !strings.Contains(body, "note: second entry") {
+		t.Errorf("notification should carry the latest note:\n%s", body)
+	}
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/ips/%s/notes/%d", ip, list.Items[0].ID), nil, nil); code != 200 {
+		t.Fatalf("delete: http %d", code)
+	}
+	if code := e.send(t, "DELETE", fmt.Sprintf("/api/v1/ips/%s/notes/%d", "198.51.100.98", list.Items[1].ID), nil, nil); code != 404 {
+		t.Errorf("delete with wrong ip: http %d, want 404", code)
+	}
+	e.get(t, "/api/v1/ips/"+ip+"/notes", &list)
+	if len(list.Items) != 1 {
+		t.Errorf("after delete: %+v", list.Items)
+	}
+}
+
 func TestReopenAlert(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()

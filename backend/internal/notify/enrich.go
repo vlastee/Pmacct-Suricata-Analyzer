@@ -133,7 +133,21 @@ func (d *Dispatcher) card(ctx context.Context, ip string) *ipCard {
 	if lists, err := d.DB.ThreatListsFor(ctx, ip); err == nil && len(lists) > 0 {
 		c.Flags = append(c.Flags, "listed: "+strings.Join(lists, ", "))
 	}
+	if c.Note == "" {
+		if notes, err := d.DB.ListIPNotes(ctx, ip, 1); err == nil && len(notes) > 0 {
+			c.Note = oneLine(notes[0].Body, 120)
+		}
+	}
 	return c
+}
+
+// oneLine collapses whitespace and truncates for use inside a message.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max-1] + "…"
+	}
+	return s
 }
 
 // labelIPs rewrites bare addresses in s as "nickname (ip)" for every nicknamed card, matching

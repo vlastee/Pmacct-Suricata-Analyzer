@@ -86,6 +86,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ids/events/{id}", s.idsEvent)
 	mux.HandleFunc("GET /api/v1/ids/summary", s.idsSummary)
 	mux.HandleFunc("GET /api/v1/ips/{ip}/names", s.ipNames)
+	mux.HandleFunc("GET /api/v1/ips/{ip}/notes", s.listIPNotes)
+	mux.HandleFunc("POST /api/v1/ips/{ip}/notes", s.addIPNote)
+	mux.HandleFunc("DELETE /api/v1/ips/{ip}/notes/{id}", s.deleteIPNote)
 	mux.HandleFunc("GET /api/v1/system/status", s.systemStatus)
 	mux.HandleFunc("POST /api/v1/notify/test", s.notifyTest)
 	mux.HandleFunc("PUT /api/v1/notify/settings", s.adminOnly(s.notifySettings))
@@ -1182,6 +1185,71 @@ func (s *Server) notifySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.Notifier.Stats())
+}
+
+// ---- per-IP notes ----
+
+func (s *Server) listIPNotes(w http.ResponseWriter, r *http.Request) {
+	ip, ok := parseIP(w, r.PathValue("ip"))
+	if !ok {
+		return
+	}
+	items, err := s.DB.ListIPNotes(r.Context(), ip, qInt(r, "limit", 0))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) addIPNote(w http.ResponseWriter, r *http.Request) {
+	ip, ok := parseIP(w, r.PathValue("ip"))
+	if !ok {
+		return
+	}
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	author := ""
+	if u := auth.UserFrom(r.Context()); u != nil {
+		author = u.Username
+	}
+	n, err := s.DB.AddIPNote(r.Context(), ip, body.Body, author)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "note is") {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, n)
+}
+
+func (s *Server) deleteIPNote(w http.ResponseWriter, r *http.Request) {
+	ip, ok := parseIP(w, r.PathValue("ip"))
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad id")
+		return
+	}
+	done, err := s.DB.DeleteIPNote(r.Context(), ip, id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !done {
+		writeErr(w, http.StatusNotFound, "no such note")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": id})
 }
 
 // ---- alert exclusions (global trusted list) ----

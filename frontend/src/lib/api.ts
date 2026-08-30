@@ -27,6 +27,7 @@ export interface Alert {
   count: number; first_seen: string; last_seen: string; state: string; acked_at: string | null
   resolved_at: string | null; notified_at: string | null; host_excluded?: string; peer_excluded?: string
 }
+export interface IPNote { id: number; ip: string; body: string; author: string; created_at: string }
 export interface Exclusion { id: number; pattern: string; kind: 'ip' | 'cidr' | 'name'; note: string; created_at: string }
 export interface AlertSummary { open: number; acked: number; critical: number; warning: number; info: number; by_rule: Record<string, number>; last_24h: number }
 export interface RuleParam { name: string; description: string; default: any }
@@ -163,6 +164,10 @@ export const api = {
   ipNames: (ip: string) => request<{ items: IPName[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/names`),
   systemStatus: () => request<any>('/api/v1/system/status'),
   notifyTest: () => request<{ results: Record<string, string> }>('/api/v1/notify/test', { method: 'POST' }),
+  ipNotes: (ip: string) => request<{ items: IPNote[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`),
+  addIPNote: (ip: string, body: string) =>
+    request<IPNote>(`/api/v1/ips/${encodeURIComponent(ip)}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) }),
+  deleteIPNote: (ip: string, id: number) => request<{ deleted: number }>(`/api/v1/ips/${encodeURIComponent(ip)}/notes/${id}`, { method: 'DELETE' }),
   exclusions: () => request<{ items: Exclusion[] }>('/api/v1/exclusions'),
   addExclusion: (pattern: string, note = '') =>
     request<{ item: Exclusion; resolved: number }>('/api/v1/exclusions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pattern, note }) }),

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type HostDetail, type IPInfo } from '../lib/api'
+  import { api, type HostDetail, type IPInfo, type IPNote } from '../lib/api'
   import { currentRange, router } from '../lib/router.svelte'
   import { fmtBytes, fmtCompact, fmtTime, flag, fmtAgo } from '../lib/format'
   import AreaChart from '../lib/components/AreaChart.svelte'
@@ -38,6 +38,25 @@
   let info = $derived(data?.host.info ?? null)
   let vt = $derived(info?.vt ?? null)
 
+  // notes journal
+  let notes = $state<IPNote[]>([])
+  let noteInput2 = $state('')
+  let noteMsg = $state('')
+  let nickNote = $state<string | null>(null)
+  async function loadNotes() {
+    try { notes = (await api.ipNotes(ip)).items } catch { notes = [] }
+    try { const n = await api.nicknames(ip); nickNote = n.items.find(x => x.ip === ip)?.note ?? null } catch { nickNote = null }
+  }
+  $effect(() => { void ip; loadNotes() })
+  async function addNote(e: Event) {
+    e.preventDefault(); noteMsg = ''
+    if (!noteInput2.trim()) return
+    try { await api.addIPNote(ip, noteInput2); noteInput2 = ''; await loadNotes() } catch (err: any) { noteMsg = err.message }
+  }
+  async function deleteNote(n: IPNote) {
+    if (!confirm('Delete this note?')) return
+    try { await api.deleteIPNote(ip, n.id); await loadNotes() } catch (err: any) { noteMsg = err.message }
+  }
   // trusted list (alert exclusions)
   let exclMsg = $state('')
   let serverMatch = $state<{ excluded: boolean; pattern: string } | null>(null)
@@ -105,6 +124,7 @@
   <button class="small" onclick={startEdit} title="Set a nickname for this address">✎ {data?.host.nickname ? 'rename' : 'nickname'}</button>
   {#if data?.host.local}<span class="badge local">local</span>{/if}
   {#if data?.kind && data.kind !== 'other'}<span class="badge">{data.kind}</span>{/if}
+  {#if notes.length}<a class="badge" href="#notes" title="notes on this address">📝 {notes.length}</a>{/if}
   {#if data?.host.risk}<span class="badge {data.host.risk.critical ? 'critical' : data.host.risk.warning ? 'warning' : ''}" title="risk score {data.host.risk.score}"><a href={router.href('/alerts', { host: ip })} style="color:inherit">risk {data.host.risk.score}</a></span>{/if}
   {#if info?.country_code}<span class="flag" style="font-size:1.3rem" title={info.country ?? ''}>{flag(info.country_code)}</span>{/if}
   {#if trustedBy}<span class="badge good" title="excluded from alerts by pattern {trustedBy}">trusted · {trustedBy}</span>
@@ -144,22 +164,44 @@
     <StatTile label="Last seen" value={h.last_seen ? fmtAgo(h.last_seen) : '–'} sub={h.first_seen ? 'first ' + fmtTime(h.first_seen) : ''} />
   </div>
 
-  {#if data.alerts.length}
-    <div class="card" style="margin-top:1rem; border-color: rgba(230,103,103,.4)">
-      <h3>Active alerts ({data.alerts.length})</h3>
-      <div class="overflow"><table>
-        <thead><tr><th>Severity</th><th>Rule</th><th>What</th><th class="num">Seen</th><th class="num">Last</th></tr></thead>
-        <tbody>
-          {#each data.alerts as a (a.id)}
-            <tr><td><span class="badge {a.severity === 'critical' ? 'critical' : a.severity === 'warning' ? 'warning' : ''}">{a.severity}</span></td>
-              <td><a class="mono small" href={router.href('/rules', { open: a.rule })}>{a.rule}</a></td>
-              <td class="wrap">{a.title}</td><td class="num">{a.count}</td><td class="num small">{fmtAgo(a.last_seen)}</td></tr>
+  <div class="grid" class:cols-2={data.alerts.length > 0} style="margin-top:1rem">
+    {#if data.alerts.length}
+      <div class="card" style="border-color: rgba(230,103,103,.4)">
+        <h3>Active alerts ({data.alerts.length})</h3>
+        <div class="overflow"><table>
+          <thead><tr><th>Severity</th><th>Rule</th><th>What</th><th class="num">Seen</th><th class="num">Last</th></tr></thead>
+          <tbody>
+            {#each data.alerts as a (a.id)}
+              <tr><td><span class="badge {a.severity === 'critical' ? 'critical' : a.severity === 'warning' ? 'warning' : ''}">{a.severity}</span></td>
+                <td><a class="mono small" href={router.href('/rules', { open: a.rule })}>{a.rule}</a></td>
+                <td class="wrap">{a.title}</td><td class="num">{a.count}</td><td class="num small">{fmtAgo(a.last_seen)}</td></tr>
+            {/each}
+          </tbody>
+        </table></div>
+        <a class="small" href={router.href('/alerts', { host: ip })}>All alerts for this host →</a>
+      </div>
+    {/if}
+    <div class="card" id="notes">
+      <h3>Notes {#if notes.length}<span class="muted">· {notes.length}</span>{/if}</h3>
+      {#if nickNote}<div class="small" style="margin-bottom:.5rem"><span class="muted">nickname note:</span> {nickNote}</div>{/if}
+      <form onsubmit={addNote} class="row" style="align-items:flex-start; margin-bottom:.6rem">
+        <textarea bind:value={noteInput2} rows="2" placeholder="What is this address? Who checked it, when, and what was decided…" style="flex:1; min-width:240px"></textarea>
+        <button type="submit" class="primary" disabled={!noteInput2.trim()}>Add note</button>
+      </form>
+      {#if noteMsg}<div class="small error">{noteMsg}</div>{/if}
+      {#if notes.length}
+        <ul class="notes">
+          {#each notes as n (n.id)}
+            <li>
+              <div class="small muted">{fmtTime(n.created_at)}{#if n.author} · {n.author}{/if}
+                <button class="x" onclick={() => deleteNote(n)} title="Delete note">×</button></div>
+              <div class="body">{n.body}</div>
+            </li>
           {/each}
-        </tbody>
-      </table></div>
-      <a class="small" href={router.href('/alerts', { host: ip })}>All alerts for this host →</a>
+        </ul>
+      {:else}<div class="small muted">No notes yet. The latest note is also included in alert notifications about this address.</div>{/if}
     </div>
-  {/if}
+  </div>
 
   <div class="grid cols-2" style="margin-top:1rem">
     <div class="card">
@@ -292,6 +334,12 @@
 {/if}
 
 <style>
+  .notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; max-height: 360px; overflow: auto; }
+  .notes li { border-top: 1px solid var(--border); padding-top: .4rem; }
+  .notes .body { white-space: pre-wrap; }
+  .notes .x { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 .2rem; }
+  textarea { font: inherit; background: var(--surface-2); color: inherit; border: 1px solid var(--border); border-radius: var(--radius); padding: .4rem; }
+
   dl { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; margin: 0; font-size: .9rem; }
   dt { color: var(--text-muted); }
   dd { margin: 0; }

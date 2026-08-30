@@ -238,6 +238,10 @@ HAVING SUM(bytes) > 1073741824
 API: `POST/PUT/DELETE /api/v1/rules/custom[/{name}]`, `POST /api/v1/rules/custom/preview`,
 `POST /api/v1/rules/{name}/run?dry=1`. Deleting a rule keeps the alerts it raised.
 
+**Notes**: every host page has a notes journal (timestamped, with the author) — what the address
+is, who checked it, what was decided. The latest note is included in alert notifications about that
+address. API: `GET/POST /api/v1/ips/{ip}/notes`, `DELETE /api/v1/ips/{ip}/notes/{id}`.
+
 **Trusted list** (Rules page, host pages, alert details): IPs, networks or hostname globs
 (`*.anthropic.com`) that never raise alerts from any rule — including VirusTotal/AbuseIPDB/feed
 hits — because you know what they are. Adding one resolves the open alerts it covers; IP labels
