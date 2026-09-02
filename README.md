@@ -2,7 +2,7 @@
 
 An ntopng-style traffic analyzer for data collected by [pmacct](http://www.pmacct.net/) into PostgreSQL.
 It reads the `acct` table pmacct writes to, adds enrichment about every external IP address
-(reverse DNS, geolocation, ASN/organisation, VirusTotal / AbuseIPDB / GreyNoise reputation), keeps
+(reverse DNS, geolocation, ASN/organisation, VirusTotal / AbuseIPDB / GreyNoise / OTX reputation), keeps
 that data fresh, **detects malicious behaviour with a rules engine**, matches traffic against
 **threat-intelligence feeds**, optionally ingests **Suricata IDS** alerts, raises deduplicated
 **alerts** with **notifications**, and presents everything in a web UI.
@@ -13,7 +13,7 @@ that data fresh, **detects malicious behaviour with a rules engine**, matches tr
 └──────────┘          │ acct, ip_info,       │          │  (backend/)               │        │ (frontend/)   │
                       │ alerts, threat_lists,│          └───┬─────────────┬─────────┘        └───────────────┘
    Suricata EVE ─────►│ ids_events, rollups… │              │ enrichment  │ notifications
-   (syslog, optional) └──────────────────────┘   ip-api/ipinfo/MaxMind · VT/AbuseIPDB/GreyNoise ·
+   (syslog, optional) └──────────────────────┘   ip-api/ipinfo/MaxMind · VT/AbuseIPDB/GreyNoise/OTX ·
                                                   threat feeds (abuse.ch, Spamhaus, Tor…) · ntfy/Telegram/…
 ```
 
@@ -127,7 +127,7 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 | `VT_RATE_LIMIT` / `VT_DAILY_QUOTA` / `VT_MONTHLY_QUOTA` | `15s` / `500` / `15500` | VirusTotal *standard free public API* limits (4 lookups/min, 500/day, 15.5 K/month). Lower them if you share the key with other tools. |
 | `VT_REFRESH_AFTER` | `168h` | re-check an IP's reputation after this, if it is still seen in traffic |
 | `VT_BATCH_SIZE` | `100` | max VT lookups per pass (also capped by remaining daily quota) |
-| `ABUSEIPDB_KEY` / `GREYNOISE_KEY` | – | enable the AbuseIPDB (1000/day) / GreyNoise reputation lanes |
+| `ABUSEIPDB_KEY` / `GREYNOISE_KEY` / `OTX_KEY` | – | enable the AbuseIPDB (1000/day) / GreyNoise / AlienVault OTX (10000/day) reputation lanes |
 | `GEOIP_CITY_DB` / `GEOIP_ASN_DB` | – | MaxMind GeoLite2 `.mmdb` paths; used for geo instead of ip-api when both set |
 | `RULES_ENABLED` / `RULES_INTERVAL` | `true` / `1m` | run the detection rules engine and how often |
 | `GATEWAYS` | – | router IP(s), exempt from DNS/beaconing rules (e.g. `10.0.0.1`) |
@@ -160,8 +160,8 @@ Two independent lanes run inside the API process and share the `ip_info` table:
 * **geo lane** (ip-api.com, ipinfo.io, or **local MaxMind GeoLite2** + reverse DNS): hostname,
   country/region/city, coordinates, ASN, organisation, ISP, hosting/proxy/mobile flags.
 * **VirusTotal lane**: malicious/suspicious/harmless/undetected engine counts, reputation, tags, network.
-* **AbuseIPDB** and **GreyNoise** lanes (optional, same quota-aware scheduler) add a confidence
-  score / scanner classification per IP.
+* **AbuseIPDB**, **GreyNoise**, and **AlienVault OTX** lanes (optional, same quota-aware scheduler)
+  add a confidence score / scanner classification / community pulse count per IP.
 * **files lane**: for every executable an endpoint agent (≥ 0.3) reports, the **hash** — never
   the file — is checked against the [Team Cymru Malware Hash Registry](https://www.team-cymru.com/mhr)
   (a DNS TXT query, free, keyless) and, when `VT_API_KEY` is set, fetched as a **VirusTotal file
@@ -204,7 +204,7 @@ Built-in rules:
 | Rule | Fires when |
 |---|---|
 | `threat_feed` | A local host exchanges traffic with an IP on a threat feed (C2, Tor, spam/attack source). **critical** |
-| `reputation` | Traffic with an IP flagged by VirusTotal (≥ N engines), AbuseIPDB or GreyNoise |
+| `reputation` | Traffic with an IP flagged by VirusTotal (≥ N engines), AbuseIPDB, GreyNoise, or AlienVault OTX |
 | `suspicious_port` | Outbound to Telnet/SMB/RDP/SMTP/IRC/VNC… (mining pools & Tor ports → critical) |
 | `port_scan` / `host_scan` | One source hits many ports on a target, or many hosts, with tiny (SYN-only) flows |
 | `brute_force` | An external IP opens many short connections to one exposed local service |
@@ -257,7 +257,7 @@ is, who checked it, what was decided. The latest note is included in alert notif
 address. API: `GET/POST /api/v1/ips/{ip}/notes`, `DELETE /api/v1/ips/{ip}/notes/{id}`.
 
 **Trusted list** (Rules page, host pages, alert details): IPs, networks or hostname globs
-(`*.anthropic.com`) that never raise alerts from any rule — including VirusTotal/AbuseIPDB/feed
+(`*.anthropic.com`) that never raise alerts from any rule — including VirusTotal/AbuseIPDB/OTX/feed
 hits — because you know what they are. Adding one resolves the open alerts it covers; IP labels
 show a `trusted` badge. API: `GET/POST /api/v1/exclusions`, `DELETE /api/v1/exclusions/{id}`,
 `GET /api/v1/exclusions/match?ip=`. Per-rule *exempt hosts* remain for narrower cases.
@@ -281,7 +281,7 @@ channel — ntfy, Gotify, Telegram, Slack, a generic JSON webhook, or SMTP email
 or digest delivery (`NOTIFY_DIGEST`), quiet hours (`NOTIFY_QUIET_HOURS`), and a re-notify interval.
 Messages name devices by their **nickname** (`petro-pc (10.0.0.115)`) and add a line of context per
 address from enrichment — hostname / learned name, country & city, organisation, hosting/proxy,
-VirusTotal / AbuseIPDB / GreyNoise verdicts, threat lists, device kind and note.
+VirusTotal / AbuseIPDB / GreyNoise / OTX verdicts, threat lists, device kind and note.
 "Send test" on the Enrichment page verifies delivery. New alerts are never lost during quiet hours —
 they're recorded and delivered when the window ends.
 
@@ -514,7 +514,7 @@ The analyzer only *adds* to the pmacct database (migrations are tracked in `sche
 * `host_hourly`, `host_peer_daily` — per-host rollups for baselines (kept ~6 months / 60 days);
 * `threat_lists` — bulk feed entries, GiST-indexed for fast CIDR containment matching;
 * `ids_events` — Suricata alerts; `ip_names` — hostnames observed via DNS/TLS/rDNS;
-* `ip_reputation` — AbuseIPDB/GreyNoise verdicts; `settings` — rule configuration & job cursors;
+* `ip_reputation` — AbuseIPDB/GreyNoise/OTX verdicts; `settings` — rule configuration & job cursors;
 * indexes on `acct(stamp_inserted)`, `acct(ip_src)`, `acct(ip_dst)` to keep window queries fast
   (~0.7 s for a 1 h window on a 4.8 M-row table without them being warm; this also makes the
   existing retention `DELETE` much cheaper).

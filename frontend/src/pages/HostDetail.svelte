@@ -270,6 +270,7 @@
           <a href="https://www.virustotal.com/gui/ip-address/{ip}" target="_blank" rel="noopener">VirusTotal ↗</a>
           <a href="https://www.abuseipdb.com/check/{ip}" target="_blank" rel="noopener">AbuseIPDB ↗</a>
           <a href="https://viz.greynoise.io/ip/{ip}" target="_blank" rel="noopener">GreyNoise ↗</a>
+          <a href="https://otx.alienvault.com/indicator/ip/{ip}" target="_blank" rel="noopener">OTX ↗</a>
           <a href="https://www.shodan.io/host/{ip}" target="_blank" rel="noopener">Shodan ↗</a>
         </div>
       {/if}

@@ -62,6 +62,12 @@ type Config struct {
 	GreyNoiseRateLimit  time.Duration
 	GreyNoiseDailyQuota int
 	GreyNoiseRefresh    time.Duration
+	// AlienVault OTX lane (enabled when key set).
+	OTXKey        string
+	OTXBaseURL    string
+	OTXRateLimit  time.Duration
+	OTXDailyQuota int
+	OTXRefresh    time.Duration
 	// MaxMind GeoLite2 local databases (used as geo provider when both paths are set).
 	GeoIPCityDB string
 	GeoIPASNDB  string
@@ -313,6 +319,17 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if c.GreyNoiseRefresh, err = envDuration("GREYNOISE_REFRESH_AFTER", 14*24*time.Hour); err != nil {
+		return nil, err
+	}
+	c.OTXKey = env("OTX_KEY", "")
+	c.OTXBaseURL = env("OTX_BASE_URL", "https://otx.alienvault.com")
+	if c.OTXRateLimit, err = envDuration("OTX_RATE_LIMIT", 1*time.Second); err != nil {
+		return nil, err
+	}
+	if c.OTXDailyQuota, err = envInt("OTX_DAILY_QUOTA", 10000); err != nil {
+		return nil, err
+	}
+	if c.OTXRefresh, err = envDuration("OTX_REFRESH_AFTER", 14*24*time.Hour); err != nil {
 		return nil, err
 	}
 	c.GeoIPCityDB = env("GEOIP_CITY_DB", "")

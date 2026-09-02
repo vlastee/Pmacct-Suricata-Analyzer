@@ -102,6 +102,10 @@ func main() {
 			worker.AddRepLane(&scheduler.RepLane{Provider: &enrich.GreyNoise{BaseURL: cfg.GreyNoiseBaseURL, APIKey: cfg.GreyNoiseKey, Client: httpc},
 				RateLimit: cfg.GreyNoiseRateLimit, DailyQuota: cfg.GreyNoiseDailyQuota, RefreshAfter: cfg.GreyNoiseRefresh})
 		}
+		if cfg.OTXKey != "" {
+			worker.AddRepLane(&scheduler.RepLane{Provider: &enrich.OTX{BaseURL: cfg.OTXBaseURL, APIKey: cfg.OTXKey, Client: httpc},
+				RateLimit: cfg.OTXRateLimit, DailyQuota: cfg.OTXDailyQuota, RefreshAfter: cfg.OTXRefresh})
+		}
 		if cfg.FileIntelEnabled {
 			fl := &scheduler.FilesLane{VT: vt, RefreshAfter: cfg.FileVTRefreshAfter, BatchSize: cfg.VTBatchSize}
 			if cfg.MHREnabled {

@@ -77,7 +77,7 @@
           <table><tbody>
             {#each sys.reputation as r}<tr><td class="mono small">{r.source}</td><td class="num small">{fmtNum(r.total)} checked</td><td class="num"><span class="badge {r.flagged ? 'critical' : ''}">{r.flagged} flagged</span></td></tr>{/each}
           </tbody></table>
-        {:else}<div class="muted small">No reputation sources (set ABUSEIPDB_KEY / GREYNOISE_KEY).</div>{/if}
+        {:else}<div class="muted small">No reputation sources (set ABUSEIPDB_KEY / GREYNOISE_KEY / OTX_KEY).</div>{/if}
         <div class="small muted" style="margin-top:.5rem">
           Suricata IDS: {#if sys.suricata_enabled}<span class="badge good">listening {sys.suricata?.listen}</span> {fmtNum(sys.suricata?.received ?? 0)} events{:else}<span class="badge">off</span>{/if}
         </div>

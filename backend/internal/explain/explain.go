@@ -251,6 +251,8 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Report, error) {
 					switch {
 					case r.Source == "abuseipdb" && r.Score != nil:
 						d.Reputation = append(d.Reputation, fmt.Sprintf("AbuseIPDB %d%%", *r.Score))
+					case r.Source == "otx" && r.Score != nil:
+						d.Reputation = append(d.Reputation, fmt.Sprintf("OTX %d pulse(s)", *r.Score))
 					default:
 						d.Reputation = append(d.Reputation, r.Source+" flagged")
 					}

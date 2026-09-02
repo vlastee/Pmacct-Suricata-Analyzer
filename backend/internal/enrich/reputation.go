@@ -166,3 +166,70 @@ func (p *GreyNoise) Lookup(ctx context.Context, ip string) (*db.Reputation, erro
 		"name": r.Name, "link": r.Link, "last_seen": r.LastSeen})
 	return &db.Reputation{Source: p.Name(), Status: "ok", Score: &score, Flagged: r.Classification == "malicious", Data: data}, nil
 }
+
+// ---- AlienVault OTX ----
+
+// OTX queries the AlienVault Open Threat Exchange DirectConnect API's "general" indicator
+// section: community pulse (threat report) count and AlienVault Labs reputation score.
+type OTX struct {
+	BaseURL string
+	APIKey  string
+	Client  *http.Client
+}
+
+// Name identifies the source.
+func (p *OTX) Name() string { return "otx" }
+
+type otxResp struct {
+	Reputation int `json:"reputation"`
+	PulseInfo  struct {
+		Count  int `json:"count"`
+		Pulses []struct {
+			Name string `json:"name"`
+		} `json:"pulses"`
+	} `json:"pulse_info"`
+}
+
+// Lookup checks one IP. Flagged if it appears in any community pulse or has a negative
+// (malicious) AlienVault Labs reputation score.
+func (p *OTX) Lookup(ctx context.Context, ip string) (*db.Reputation, error) {
+	u := strings.TrimRight(p.BaseURL, "/") + "/api/v1/indicators/IPv4/" + url.PathEscape(ip) + "/general"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-OTX-API-KEY", p.APIKey)
+	req.Header.Set("Accept", "application/json")
+	c := p.Client
+	if c == nil {
+		c = http.DefaultClient
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return nil, ErrQuotaExceeded
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, fmt.Errorf("otx: invalid API key (http %d)", resp.StatusCode)
+	case http.StatusOK:
+	default:
+		return nil, fmt.Errorf("otx http %d", resp.StatusCode)
+	}
+	var r otxResp
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("otx decode: %w", err)
+	}
+	names := make([]string, 0, len(r.PulseInfo.Pulses))
+	for i, pl := range r.PulseInfo.Pulses {
+		if i >= 5 {
+			break
+		}
+		names = append(names, pl.Name)
+	}
+	score := r.PulseInfo.Count
+	data, _ := json.Marshal(map[string]any{"pulse_count": r.PulseInfo.Count, "reputation": r.Reputation, "pulses": names})
+	return &db.Reputation{Source: p.Name(), Status: "ok", Score: &score, Flagged: r.PulseInfo.Count > 0 || r.Reputation < 0, Data: data}, nil
+}
