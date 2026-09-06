@@ -1,0 +1,67 @@
+site_name: Pmacct-Suricata Analyzer
+site_description: >-
+  Self-hosted network traffic analyzer: pmacct flows, Suricata IDS events, threat-intel
+  enrichment, detection rules with notifications, and endpoint agents that say which
+  program opened which connection.
+site_url: https://vlastee.github.io/Pmacct-Suricata-Analyzer/
+repo_url: https://github.com/vlastee/Pmacct-Suricata-Analyzer
+repo_name: vlastee/Pmacct-Suricata-Analyzer
+edit_uri: edit/master/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+    - toc.integrate
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Tutorials:
+      - Deploying & updating: tutorials/deploy.md
+      - "pfSense: NetFlow & Suricata": tutorials/pfsense.md
+      - Endpoint agents: tutorials/agents.md
+      - "Explain: what is this program?": tutorials/explain.md
+      - Alerts & notifications: tutorials/alerts.md
+      - Enrichment & threat intel: tutorials/enrichment.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - HTTP API: reference/api.md
+      - Troubleshooting: reference/troubleshooting.md
+  - Adding screenshots: screenshots.md

@@ -9,3 +9,4 @@ deploy/analyzer.env
 agent/target/
 agent/**/target/
 agent/dist/
+site/
