@@ -1,5 +1,10 @@
 # Pmacct Analyzer
 
+📖 **[Documentation, tutorials & screenshots →](https://vlastee.github.io/Pmacct-Suricata-Analyzer/)**
+· [Getting started](https://vlastee.github.io/Pmacct-Suricata-Analyzer/getting-started/)
+· [pfSense setup](https://vlastee.github.io/Pmacct-Suricata-Analyzer/tutorials/pfsense/)
+· [Endpoint agents](https://vlastee.github.io/Pmacct-Suricata-Analyzer/tutorials/agents/)
+
 An ntopng-style traffic analyzer for data collected by [pmacct](http://www.pmacct.net/) into PostgreSQL.
 It reads the `acct` table pmacct writes to, adds enrichment about every external IP address
 (reverse DNS, geolocation, ASN/organisation, VirusTotal / AbuseIPDB / GreyNoise / OTX reputation), keeps
@@ -520,3 +525,16 @@ The analyzer only *adds* to the pmacct database (migrations are tracked in `sche
   existing retention `DELETE` much cheaper).
 
 pmacct's own tables (`acct`, `acct_as`, `acct_uni`, `proto`) are never modified.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 vlastee.
+
+The software is provided **"as is", without warranty of any kind**, and the authors accept
+**no liability** for any claim or damages arising from its use (see [`LICENSE`](LICENSE) for the
+full text).
+
+It is a network-monitoring tool: you are responsible for deploying it only on networks you own
+or are authorised to monitor, and for complying with the terms of any third-party service you
+enable — VirusTotal, AbuseIPDB, GreyNoise, OTX and the threat feeds each have their own licence
+(the free VirusTotal key, for example, is personal/non-commercial use only).
