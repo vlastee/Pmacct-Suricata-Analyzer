@@ -88,8 +88,10 @@ services:
       # Import the CA from Security → TLS (or GET /api/v1/tls/ca) into browsers/phones; agents pin it.
       TLS_LISTEN_ADDR: ":8091"
       TLS_HOSTS: 10.0.0.210        # names/IPs the certificate is valid for (comma-separated)
-      # Internal ranges + the WAN address (drop the /32 once softflowd captures on the LAN side).
-      LOCAL_NETWORKS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,174.54.200.232/32
+      # Internal ranges. If your own public (WAN) address shows up in flows, add it in deploy/.env
+      # (gitignored, read by docker compose), e.g.:
+      #   LOCAL_NETWORKS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,203.0.113.10/32
+      LOCAL_NETWORKS: ${LOCAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       GATEWAYS: 10.0.0.1           # pfSense — exempt from DNS/beaconing rules
       PUBLIC_URL: http://10.0.0.210:8090
       ENRICH_ENABLED: "true"

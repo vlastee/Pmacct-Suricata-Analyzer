@@ -6,7 +6,7 @@ import (
 )
 
 func TestParsePrefixesAndIsLocal(t *testing.T) {
-	ps, err := ParsePrefixes("10.0.0.0/8, 174.54.200.232 ,fc00::/7")
+	ps, err := ParsePrefixes("10.0.0.0/8, 203.0.113.10 ,fc00::/7")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -14,7 +14,7 @@ func TestParsePrefixesAndIsLocal(t *testing.T) {
 		t.Fatalf("want 3 prefixes, got %d", len(ps))
 	}
 	c := &Config{LocalNetworks: ps}
-	for ip, want := range map[string]bool{"10.1.2.3": true, "174.54.200.232": true, "174.54.200.233": false, "8.8.8.8": false, "fd00::1": true} {
+	for ip, want := range map[string]bool{"10.1.2.3": true, "203.0.113.10": true, "203.0.113.11": false, "8.8.8.8": false, "fd00::1": true} {
 		if got := c.IsLocal(netip.MustParseAddr(ip)); got != want {
 			t.Errorf("IsLocal(%s)=%v want %v", ip, got, want)
 		}
