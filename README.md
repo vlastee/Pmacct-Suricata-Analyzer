@@ -119,7 +119,7 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 | `TLS_HOSTS` | this machine's hostname + addresses | IPs / names the server certificate covers |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | – | use your own certificate instead of the internal CA |
 | `STATIC_DIR` | `../frontend/dist` | built SPA to serve |
-| `LOCAL_NETWORKS` | RFC1918 + loopback + link-local + ULA | Comma-separated CIDRs/IPs treated as *local*. **Add the pmacct host's own public address if it captures on the WAN side** (e.g. `174.54.200.232/32` for this deployment), otherwise all traffic looks external. |
+| `LOCAL_NETWORKS` | RFC1918 + loopback + link-local + ULA | Comma-separated CIDRs/IPs treated as *local*. **Add the pmacct host's own public address if it captures on the WAN side** (e.g. `203.0.113.10/32`; with the `deploy/` compose stack put it in the gitignored `deploy/.env`, see `deploy/.env.example`), otherwise all traffic looks external. |
 | `ENRICH_ENABLED` | `true` | run the background enrichment workers |
 | `ENRICH_INTERVAL` | `5m` | how often each lane scans for work |
 | `ENRICH_LOOKBACK` | `24h` | only IPs seen in traffic within this window are (re)enriched — "the daily feed" |
