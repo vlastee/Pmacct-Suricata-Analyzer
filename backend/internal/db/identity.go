@@ -45,12 +45,30 @@ func (p *ProgramIdentity) lookupPriority() int {
 	return 0
 }
 
+// cleanText makes an agent-supplied string storable in a PostgreSQL text column: Windows
+// version resources and signer names can carry NUL padding (which PostgreSQL rejects with
+// SQLSTATE 22021) or bytes that are not valid UTF-8.
+func cleanText(s string) string {
+	if strings.IndexByte(s, 0) >= 0 {
+		s = strings.ReplaceAll(s, "\x00", "")
+	}
+	return strings.ToValidUTF8(s, "�")
+}
+
+func (p *ProgramIdentity) sanitize() {
+	for _, f := range []*string{&p.Exe, &p.SHA256, &p.SHA1, &p.MD5, &p.Origin, &p.Package, &p.PackageVersion,
+		&p.Signature, &p.Signer, &p.Company, &p.Product, &p.FileVersion, &p.Description, &p.Note} {
+		*f = cleanText(*f)
+	}
+}
+
 // UpsertProgramIdentities stores identity facts for an agent and registers the hashes for the
 // file-intelligence lane. Returns the number of rows written.
 func (d *DB) UpsertProgramIdentities(ctx context.Context, agentID int64, items []ProgramIdentity) (int, error) {
 	n := 0
 	for i := range items {
 		p := &items[i]
+		p.sanitize()
 		if p.Exe == "" || len(p.SHA256) != 64 {
 			continue
 		}
