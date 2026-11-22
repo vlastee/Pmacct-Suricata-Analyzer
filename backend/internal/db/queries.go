@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -631,11 +632,17 @@ func (d *DB) DataRange(ctx context.Context) (min, max *time.Time, err error) {
 // UpsertVT stores a VirusTotal result. The ip_info row is created (status pending for the
 // geo lane) if it does not exist yet. Geo fields returned by VT fill gaps only.
 func (d *DB) UpsertVT(ctx context.Context, ip string, v *VTResult) error {
+	// Engine names are replaced on every successful lookup (an empty list clears old ones) and
+	// left alone when the lookup did not produce them.
+	var dets []byte
+	if v.Detections != nil {
+		dets, _ = json.Marshal(v.Detections)
+	}
 	_, err := d.Pool.Exec(ctx, `
 INSERT INTO ip_info (ip, status, asn, as_org, country_code,
                      vt_malicious, vt_suspicious, vt_harmless, vt_undetected, vt_reputation, vt_tags, vt_network,
-                     vt_last_analysis, vt_status, vt_error, vt_attempts, vt_lookup_at, updated_at)
-VALUES ($1::inet, 'pending', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 1, now(), now())
+                     vt_last_analysis, vt_status, vt_error, vt_detections, vt_attempts, vt_lookup_at, updated_at)
+VALUES ($1::inet, 'pending', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, 1, now(), now())
 ON CONFLICT (ip) DO UPDATE SET
   asn = COALESCE(ip_info.asn, EXCLUDED.asn), as_org = COALESCE(ip_info.as_org, EXCLUDED.as_org),
   country_code = COALESCE(ip_info.country_code, EXCLUDED.country_code),
@@ -648,9 +655,10 @@ ON CONFLICT (ip) DO UPDATE SET
   vt_network = COALESCE(EXCLUDED.vt_network, ip_info.vt_network),
   vt_last_analysis = COALESCE(EXCLUDED.vt_last_analysis, ip_info.vt_last_analysis),
   vt_status = EXCLUDED.vt_status, vt_error = EXCLUDED.vt_error,
+  vt_detections = COALESCE(EXCLUDED.vt_detections, ip_info.vt_detections),
   vt_attempts = ip_info.vt_attempts + 1, vt_lookup_at = now(), updated_at = now()`,
 		ip, v.ASN, v.ASOrg, v.CountryCode, v.Malicious, v.Suspicious, v.Harmless, v.Undetected, v.Reputation,
-		v.Tags, v.Network, v.LastAnalysis, v.Status, v.Error)
+		v.Tags, v.Network, v.LastAnalysis, v.Status, v.Error, dets)
 	return err
 }
 

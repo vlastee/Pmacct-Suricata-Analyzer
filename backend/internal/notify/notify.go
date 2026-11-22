@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,9 @@ type Message struct {
 	Severity string // highest severity in the batch
 	Alerts   []db.Alert
 	URL      string
+	// Parts are self-contained chunks of Body (one alert card each, plus any overflow summary).
+	// Channels with a size limit (Telegram) send them as separate messages instead of cutting Body.
+	Parts []string
 }
 
 // Dispatcher applies severity filter, quiet hours and digest batching, then fans out to channels.
@@ -290,8 +294,11 @@ func viaOf(details []byte) string {
 // maxBodyChars keeps a batch under Telegram's 4096-character message limit with room for the link.
 const maxBodyChars = 3600
 
-// render formats a batch. Addresses are shown with their nicknames and each alert gets a line of
-// context about the peer (and about the host when it has no nickname) from enrichment data.
+// maxCards is how many alerts in one batch get a full context card; the rest are listed briefly.
+const maxCards = 10
+
+// render formats a batch: one full context card per alert (see card.go), most severe first, and a
+// one-line summary for anything beyond maxCards.
 func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 	top := db.SevInfo
 	for _, a := range alerts {
@@ -300,7 +307,6 @@ func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 		}
 	}
 	cards := d.cards(ctx, alerts)
-	var b strings.Builder
 	title := ""
 	if len(alerts) == 1 {
 		a := alerts[0]
@@ -308,6 +314,30 @@ func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 	} else {
 		title = fmt.Sprintf("[%s] %d new alerts", strings.ToUpper(top), len(alerts))
 	}
+	ordered := append([]db.Alert(nil), alerts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return db.SeverityRank(ordered[i].Severity) > db.SeverityRank(ordered[j].Severity)
+	})
+	now := d.Now()
+	var parts []string
+	for i, a := range ordered {
+		if i == maxCards {
+			parts = append(parts, d.summaryLines(ordered[i:], cards))
+			break
+		}
+		parts = append(parts, d.gather(ctx, a, cards).render(now))
+	}
+	link := ""
+	if d.Cfg.PublicURL != "" {
+		link = d.Cfg.PublicURL + "/#/alerts"
+	}
+	return Message{Title: title, Body: strings.Join(parts, "\n\n────────\n\n"), Severity: top, Alerts: alerts, URL: link, Parts: parts}
+}
+
+// summaryLines is the compact one-line-per-alert form, used for the overflow of a large batch.
+func (d *Dispatcher) summaryLines(alerts []db.Alert, cards map[string]*ipCard) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d more alert(s):\n", len(alerts))
 	for i, a := range alerts {
 		if i >= 20 || b.Len() > maxBodyChars {
 			fmt.Fprintf(&b, "… and %d more\n", len(alerts)-i)
@@ -346,12 +376,10 @@ func (d *Dispatcher) render(ctx context.Context, alerts []db.Alert) Message {
 			}
 		}
 	}
-	link := ""
 	if d.Cfg.PublicURL != "" {
-		link = d.Cfg.PublicURL + "/#/alerts"
-		fmt.Fprintf(&b, "%s\n", link)
+		fmt.Fprintf(&b, "%s/#/alerts\n", d.Cfg.PublicURL)
 	}
-	return Message{Title: title, Body: strings.TrimSpace(b.String()), Severity: top, Alerts: alerts, URL: link}
+	return strings.TrimSpace(b.String())
 }
 
 // ---- channels ----
@@ -452,12 +480,76 @@ func (g *Gotify) Send(ctx context.Context, m Message) error {
 type Telegram struct {
 	Token, ChatID string
 	Client        *http.Client
+	BaseURL       string // tests only; defaults to https://api.telegram.org
 }
 
 func (t *Telegram) Name() string { return "telegram" }
 func (t *Telegram) Send(ctx context.Context, m Message) error {
-	return postJSON(ctx, t.Client, "https://api.telegram.org/bot"+t.Token+"/sendMessage", nil,
-		map[string]any{"chat_id": t.ChatID, "text": m.Title + "\n" + m.Body, "disable_web_page_preview": true})
+	for _, text := range telegramChunks(m) {
+		if err := postJSON(ctx, t.Client, t.apiBase()+"/bot"+t.Token+"/sendMessage", nil,
+			map[string]any{"chat_id": t.ChatID, "text": text, "disable_web_page_preview": true}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Telegram) apiBase() string {
+	if t.BaseURL != "" {
+		return strings.TrimRight(t.BaseURL, "/")
+	}
+	return "https://api.telegram.org"
+}
+
+// telegramLimit is Telegram's sendMessage cap (4096 characters) with a safety margin.
+const telegramLimit = 4000
+
+// telegramChunks packs a message into as few Telegram messages as possible without splitting an
+// alert card. Cards already carry their own header, so the batch title is only added for batches.
+func telegramChunks(m Message) []string {
+	parts := m.Parts
+	if len(parts) == 0 {
+		parts = []string{m.Title + "\n" + m.Body}
+	} else if len(m.Alerts) > 1 {
+		parts = append([]string{m.Title}, parts...)
+	}
+	var out []string
+	cur := ""
+	for _, p := range parts {
+		for _, piece := range splitRunes(p, telegramLimit) {
+			switch {
+			case cur == "":
+				cur = piece
+			case len([]rune(cur))+2+len([]rune(piece)) <= telegramLimit:
+				cur += "\n\n" + piece
+			default:
+				out = append(out, cur)
+				cur = piece
+			}
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+// splitRunes cuts s into pieces of at most n characters, preferring line breaks.
+func splitRunes(s string, n int) []string {
+	r := []rune(s)
+	var out []string
+	for len(r) > n {
+		cut := n
+		for i := n; i > n/2; i-- {
+			if r[i] == '\n' {
+				cut = i
+				break
+			}
+		}
+		out = append(out, strings.TrimRight(string(r[:cut]), "\n"))
+		r = []rune(strings.TrimLeft(string(r[cut:]), "\n"))
+	}
+	return append(out, string(r))
 }
 
 // Slack posts to an incoming webhook.

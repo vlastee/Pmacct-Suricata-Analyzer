@@ -20,6 +20,14 @@ func fmtBytes(n int64) string {
 	return ""
 }
 
+// plural renders "1 packet" / "12 packets".
+func plural(n int64, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
 func builtinRules() []*Rule {
 	return []*Rule{
 		{
@@ -219,8 +227,13 @@ func builtinRules() []*Rule {
 				}
 				for _, h := range flagged {
 					out = append(out, db.Finding{Host: h.Host, Peer: h.Peer, Severity: db.SevCritical, Key: "flagged",
-						Title:   fmt.Sprintf("%s tried to reach flagged %s with no reply (%s)", h.Host, h.Peer, strings.Join(h.Reasons, ", ")),
-						Details: map[string]any{"reasons": h.Reasons, "flows": h.Flows, "hint": "unanswered attempts toward known-bad infrastructure often mean malware whose callbacks are being blocked"}})
+						// "No reply" means the flow sensor saw packets leave and nothing come back; it does not
+						// know whether the firewall dropped them or the peer never answered, so say both.
+						Title: fmt.Sprintf("%s sent %s to flagged %s in %s and got nothing back (blocked or unanswered) (%s)",
+							h.Host, plural(h.Packets, "packet"), h.Peer, plural(h.Flows, "flow"), strings.Join(h.Reasons, ", ")),
+						Details: map[string]any{"reasons": h.Reasons, "flows": h.Flows, "packets_out": h.Packets, "bytes_out": h.Bytes, "packets_in": 0,
+							"outcome": "one-way: no return traffic seen; firewall drop or no answer",
+							"hint":    "unanswered attempts toward known-bad infrastructure often mean malware whose callbacks are being blocked"}})
 				}
 				return out, nil
 			},

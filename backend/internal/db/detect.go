@@ -274,26 +274,28 @@ type OneWayFlagged struct {
 	Host, Peer string
 	Reasons    []string
 	Flows      int64
+	Packets    int64 // host → peer; nothing came back
+	Bytes      int64
 }
 
 // DetectOneWayFlagged finds unanswered outbound flows toward threat-listed or reputation-flagged peers.
 func (d *DB) DetectOneWayFlagged(ctx context.Context, w Window, locals []string, minMal int) ([]OneWayFlagged, error) {
 	rows, err := d.Pool.Query(ctx, `
 WITH f AS (
-  SELECT ip_src, ip_dst, `+local("ip_src", "$3")+` AS ls, `+local("ip_dst", "$3")+` AS ld
+  SELECT ip_src, ip_dst, packets, bytes, `+local("ip_src", "$3")+` AS ls, `+local("ip_dst", "$3")+` AS ld
   FROM acct WHERE stamp_inserted >= $1 AND stamp_inserted < $2 AND ip_proto IN (6, 17)
 ),
-o AS (SELECT ip_src AS host, ip_dst AS peer, COUNT(*) n FROM f WHERE ls AND NOT ld GROUP BY 1,2),
+o AS (SELECT ip_src AS host, ip_dst AS peer, COUNT(*) n, SUM(packets) pk, SUM(bytes) b FROM f WHERE ls AND NOT ld GROUP BY 1,2),
 back AS (SELECT DISTINCT ip_dst AS host, ip_src AS peer FROM f WHERE ld AND NOT ls),
 ow AS (SELECT o.* FROM o LEFT JOIN back b ON b.host = o.host AND b.peer = o.peer WHERE b.host IS NULL),
 reasons AS (
-  SELECT ow.host, ow.peer, ow.n,
+  SELECT ow.host, ow.peer, ow.n, ow.pk, ow.b,
     ARRAY(SELECT 'list:' || t.list FROM threat_lists t WHERE ow.peer <<= t.net) ||
     ARRAY(SELECT 'rep:' || r.source FROM ip_reputation r WHERE r.ip = ow.peer AND r.flagged) ||
     CASE WHEN EXISTS (SELECT 1 FROM ip_info i WHERE i.ip = ow.peer AND COALESCE(i.vt_malicious,0) >= $4) THEN ARRAY['virustotal'] ELSE ARRAY[]::text[] END AS why
   FROM ow
 )
-SELECT host(host), host(peer), why, n FROM reasons WHERE array_length(why, 1) > 0 ORDER BY n DESC LIMIT 200`,
+SELECT host(host), host(peer), why, n, pk, b FROM reasons WHERE array_length(why, 1) > 0 ORDER BY n DESC LIMIT 200`,
 		w.Since, w.Until, locals, minMal)
 	if err != nil {
 		return nil, err
@@ -302,7 +304,7 @@ SELECT host(host), host(peer), why, n FROM reasons WHERE array_length(why, 1) > 
 	out := []OneWayFlagged{}
 	for rows.Next() {
 		var h OneWayFlagged
-		if err := rows.Scan(&h.Host, &h.Peer, &h.Reasons, &h.Flows); err != nil {
+		if err := rows.Scan(&h.Host, &h.Peer, &h.Reasons, &h.Flows, &h.Packets, &h.Bytes); err != nil {
 			return nil, err
 		}
 		out = append(out, h)

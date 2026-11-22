@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,12 +45,42 @@ type vtResp struct {
 				Undetected int `json:"undetected"`
 				Timeout    int `json:"timeout"`
 			} `json:"last_analysis_stats"`
+			LastAnalysisResults map[string]vtEngineResult `json:"last_analysis_results"`
 		} `json:"attributes"`
 	} `json:"data"`
 	Error *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+type vtEngineResult struct {
+	EngineName string `json:"engine_name"`
+	Category   string `json:"category"`
+	Result     string `json:"result"`
+}
+
+// vtDetections keeps the engines that called the address malicious or suspicious, malicious
+// first, then by engine name. Never nil, so a clean result clears previously stored names.
+func vtDetections(results map[string]vtEngineResult) []db.VTDetection {
+	out := []db.VTDetection{}
+	for key, r := range results {
+		if r.Category != "malicious" && r.Category != "suspicious" {
+			continue
+		}
+		name := r.EngineName
+		if name == "" {
+			name = key
+		}
+		out = append(out, db.VTDetection{Engine: name, Category: r.Category, Result: r.Result})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Category != out[j].Category {
+			return out[i].Category == "malicious"
+		}
+		return strings.ToLower(out[i].Engine) < strings.ToLower(out[j].Engine)
+	})
+	return out
 }
 
 // Lookup fetches the reputation summary for an IP. An unknown IP (404) yields an "ok" result
@@ -78,7 +109,7 @@ func (p *VirusTotal) Lookup(ctx context.Context, ip string) (*db.VTResult, error
 		return nil, fmt.Errorf("virustotal: invalid API key (http %d)", resp.StatusCode)
 	case http.StatusNotFound:
 		zero := 0
-		return &db.VTResult{Malicious: &zero, Suspicious: &zero, Harmless: &zero, Undetected: &zero, Status: "ok", Tags: []string{}}, nil
+		return &db.VTResult{Malicious: &zero, Suspicious: &zero, Harmless: &zero, Undetected: &zero, Status: "ok", Tags: []string{}, Detections: []db.VTDetection{}}, nil
 	case http.StatusOK:
 	default:
 		return nil, fmt.Errorf("virustotal http %d", resp.StatusCode)
@@ -99,6 +130,7 @@ func (p *VirusTotal) Lookup(ctx context.Context, ip string) (*db.VTResult, error
 		Malicious: &st.Malicious, Suspicious: &st.Suspicious, Harmless: &st.Harmless, Undetected: &st.Undetected,
 		Reputation: &a.Reputation, Tags: a.Tags, Network: sp(a.Network), Status: "ok",
 		ASOrg: sp(a.ASOwner), CountryCode: sp(a.Country),
+		Detections: vtDetections(a.LastAnalysisResults),
 	}
 	if res.Tags == nil {
 		res.Tags = []string{}

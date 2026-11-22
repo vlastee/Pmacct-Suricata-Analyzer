@@ -130,6 +130,8 @@ type VTResult struct {
 	Error        *string    `json:"error"`
 	Attempts     int        `json:"attempts"`
 	LookupAt     *time.Time `json:"lookup_at"`
+	// Engines that flagged the IP; set by a fresh lookup only (nil = not part of this result).
+	Detections []VTDetection `json:"-"`
 	// Geo fields VirusTotal also returns; merged into the main record when missing.
 	ASN         *string `json:"-"`
 	ASOrg       *string `json:"-"`
