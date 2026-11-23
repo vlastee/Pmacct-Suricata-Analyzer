@@ -13,6 +13,7 @@
   import Alerts from './pages/Alerts.svelte'
   import Rules from './pages/Rules.svelte'
   import IDS from './pages/IDS.svelte'
+  import Firewall from './pages/Firewall.svelte'
   import Security from './pages/Security.svelte'
   import Agents from './pages/Agents.svelte'
   import Login from './pages/Login.svelte'
@@ -39,7 +40,7 @@
 
   const nav = [
     { path: '/', label: 'Overview' }, { path: '/alerts', label: 'Alerts' }, { path: '/hosts', label: 'Hosts' },
-    { path: '/flows', label: 'Flows' }, { path: '/threats', label: 'Threats' }, { path: '/ids', label: 'IDS' },
+    { path: '/flows', label: 'Flows' }, { path: '/threats', label: 'Threats' }, { path: '/ids', label: 'IDS' }, { path: '/firewall', label: 'Firewall' },
     { path: '/rules', label: 'Rules' }, { path: '/nicknames', label: 'Nicknames' }, { path: '/enrichment', label: 'Enrichment' },
   ]
   let navItems = $derived(auth.user?.is_admin || auth.authDisabled ? [...nav, { path: '/agents', label: 'Agents' }, { path: '/security', label: 'Security' }] : nav)
@@ -98,6 +99,8 @@
     <Rules {reloadKey} />
   {:else if section === 'ids'}
     <IDS {reloadKey} />
+  {:else if section === 'firewall'}
+    <Firewall {reloadKey} />
   {:else if section === 'agents'}
     <Agents {reloadKey} />
   {:else if section === 'security'}

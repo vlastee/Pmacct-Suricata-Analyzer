@@ -473,6 +473,13 @@ func (w *Worker) RunRollupsOnce(ctx context.Context) int {
 		} else {
 			_ = w.DB.SetSetting(ctx, "last_prune", now)
 		}
+		if days := w.Cfg.FirewallRetentionDays; days > 0 {
+			if n, err := w.DB.PruneFirewallEvents(ctx, time.Duration(days)*24*time.Hour); err != nil {
+				slog.Error("prune firewall log", "err", err)
+			} else if n > 0 {
+				slog.Info("pruned firewall log", "rows", n, "retention_days", days)
+			}
+		}
 		if ret, err := w.DB.GetAgentRetention(ctx); err == nil {
 			if conns, agents, err := w.DB.PruneAgentData(ctx, ret); err != nil {
 				slog.Error("prune agent data", "err", err)

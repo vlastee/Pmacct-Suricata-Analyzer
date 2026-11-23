@@ -65,6 +65,16 @@ The analyzer accepts Suricata's EVE JSON over syslog on `SURICATA_LISTEN` (e.g. 
     full lines over TCP. (The malformed counter is cumulative and only resets when the analyzer
     restarts — watch whether it stops climbing, not the total.)
 
+### Firewall log
+
+With *Remote Syslog Contents = Everything*, pfSense also forwards its firewall log (`filterlog`)
+to the same listener. The analyzer parses each record (rule and tracker, interface, pass/block,
+direction, addresses, ports, TCP flags) and stores it in the `fw_events` table, batched, for
+`FIREWALL_RETENTION_DAYS` (default 30). The IDS page shows how many records were stored.
+What gets logged is set in pfSense: *Status → System Logs → Settings → Log packets matched
+from the default block rules*, and *Log packets that are handled by this rule* on individual
+rules. Set `FIREWALL_INGEST=false` to ignore the firewall log.
+
 ![IDS page with EVE events](../images/ids.png)
 
 Test it end to end from a LAN machine (triggers the classic ET policy rule):

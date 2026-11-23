@@ -23,6 +23,15 @@ type AlertSink interface {
 	RaiseIDS(ctx context.Context, f db.Finding) error
 }
 
+// Ingest defaults. Lines are read off the sockets as fast as they arrive and handed to a small
+// worker pool through a queue, so a slow database write never stalls the reader: when the
+// reader stalled, pfSense bursts overflowed the kernel's socket buffer and were lost silently.
+const (
+	defaultWorkers    = 4
+	defaultQueueSize  = 50000
+	defaultReadBuffer = 8 << 20 // requested SO_RCVBUF; the kernel caps it at net.core.rmem_max
+)
+
 // Listener receives EVE events.
 type Listener struct {
 	DB      *db.DB
@@ -30,6 +39,19 @@ type Listener struct {
 	Sink    AlertSink
 	IsLocal func(netip.Addr) bool
 	Now     func() time.Time
+
+	// Firewall takes the pfSense firewall log lines that share this syslog stream; it
+	// returns false for lines that are not its own. Nil leaves them ignored.
+	Firewall interface{ Handle(line string) bool }
+
+	Workers    int // parallel line handlers (default 4)
+	QueueSize  int // lines buffered between the sockets and the workers (default 50000)
+	ReadBuffer int // UDP receive buffer to request, bytes (default 8 MiB)
+
+	lines    chan string
+	alertMu  sync.Mutex // alerts are handled one at a time so a burst cannot notify twice
+	overflow atomic.Int64
+	lastOver atomic.Int64 // unix seconds of the last overflow warning
 
 	received  atomic.Int64
 	alerts    atomic.Int64
@@ -72,6 +94,9 @@ type Stats struct {
 	Dropped     int64      `json:"dropped"`
 	Malformed   int64      `json:"malformed"` // lines that looked like JSON but would not parse (usually syslog truncation)
 	Ignored     int64      `json:"ignored"`   // syslog lines with no JSON at all (other daemons forwarded alongside Suricata)
+	Overflow    int64      `json:"overflow"`  // lines discarded because the ingest queue was full
+	Queued      int        `json:"queued"`    // lines waiting for a worker right now
+	QueueCap    int        `json:"queue_cap"`
 	LastEvent   *time.Time `json:"last_event,omitempty"`
 	LastError   string     `json:"last_error,omitempty"`
 	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
@@ -83,7 +108,11 @@ func (l *Listener) Stats() Stats {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	s := Stats{Listen: l.Addr, Received: l.received.Load(), Alerts: l.alerts.Load(), Names: l.names.Load(),
-		Dropped: l.dropped.Load(), Malformed: l.malformed.Load(), Ignored: l.ignored.Load(), LastError: l.lastErr, Types: []TypeStat{}}
+		Dropped: l.dropped.Load(), Malformed: l.malformed.Load(), Ignored: l.ignored.Load(), Overflow: l.overflow.Load(),
+		LastError: l.lastErr, Types: []TypeStat{}}
+	if l.lines != nil {
+		s.Queued, s.QueueCap = len(l.lines), cap(l.lines)
+	}
 	if !l.started.IsZero() {
 		t := l.started
 		s.Started = &t
@@ -162,16 +191,37 @@ func (l *Listener) Run(ctx context.Context) error {
 	l.mu.Lock()
 	l.started = l.Now()
 	l.mu.Unlock()
+	if l.Workers <= 0 {
+		l.Workers = defaultWorkers
+	}
+	if l.QueueSize <= 0 {
+		l.QueueSize = defaultQueueSize
+	}
+	if l.ReadBuffer <= 0 {
+		l.ReadBuffer = defaultReadBuffer
+	}
+	lines := make(chan string, l.QueueSize)
+	l.mu.Lock() // Stats reads the queue under mu
+	l.lines = lines
+	l.mu.Unlock()
+	for range l.Workers {
+		go l.work(ctx)
+	}
 	pc, err := net.ListenPacket("udp", l.Addr)
 	if err != nil {
 		return fmt.Errorf("suricata udp listen: %w", err)
+	}
+	if uc, ok := pc.(*net.UDPConn); ok {
+		if err := uc.SetReadBuffer(l.ReadBuffer); err != nil {
+			slog.Warn("suricata udp read buffer", "err", err)
+		}
 	}
 	ln, err := net.Listen("tcp", l.Addr)
 	if err != nil {
 		pc.Close()
 		return fmt.Errorf("suricata tcp listen: %w", err)
 	}
-	slog.Info("suricata listener started", "addr", l.Addr)
+	slog.Info("suricata listener started", "addr", l.Addr, "workers", l.Workers, "queue", l.QueueSize)
 	go func() {
 		<-ctx.Done()
 		pc.Close()
@@ -184,7 +234,7 @@ func (l *Listener) Run(ctx context.Context) error {
 			if err != nil {
 				return
 			}
-			l.HandleLine(ctx, string(buf[:n]))
+			l.offer(string(buf[:n]))
 		}
 	}()
 	for {
@@ -200,10 +250,81 @@ func (l *Listener) Run(ctx context.Context) error {
 			sc := bufio.NewScanner(c)
 			sc.Buffer(make([]byte, 1<<20), 1<<20)
 			for sc.Scan() {
-				l.HandleLine(ctx, sc.Text())
+				select { // TCP can wait: the sender slows down instead of losing lines
+				case l.lines <- sc.Text():
+				case <-ctx.Done():
+					return
+				}
 			}
 		}(conn)
 	}
+}
+
+// work handles queued lines until ctx is done.
+func (l *Listener) work(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case line := <-l.lines:
+			l.HandleLine(ctx, line)
+		}
+	}
+}
+
+// offer queues a UDP line without blocking the reader. A full queue drops the line, but
+// visibly (overflow counter, a warning at most once a minute), unlike a kernel buffer overrun.
+func (l *Listener) offer(line string) {
+	select {
+	case l.lines <- line:
+	default:
+		n := l.overflow.Add(1)
+		now := l.Now().Unix()
+		if last := l.lastOver.Load(); now-last >= 60 && l.lastOver.CompareAndSwap(last, now) {
+			slog.Warn("suricata ingest queue full, dropping lines", "overflow_total", n, "queue", cap(l.lines))
+		}
+	}
+}
+
+// cleanJSON makes an EVE record storable: Postgres rejects invalid UTF-8 and NUL characters
+// (raw in text columns, \u0000 in jsonb), and Suricata copies both straight out of packets
+// (DNS names especially). NULs become U+FFFD so the record keeps its shape.
+func cleanJSON(js string) string {
+	js = strings.ToValidUTF8(js, "\uFFFD")
+	if !strings.Contains(js, `\u0000`) {
+		return js
+	}
+	dec := json.NewDecoder(strings.NewReader(js))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return js // let the caller report it as malformed
+	}
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(stripNUL(v)); err != nil {
+		return js
+	}
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func stripNUL(v any) any {
+	switch t := v.(type) {
+	case string:
+		return strings.ReplaceAll(t, "\x00", "\uFFFD")
+	case []any:
+		for i := range t {
+			t[i] = stripNUL(t[i])
+		}
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[strings.ReplaceAll(k, "\x00", "\uFFFD")] = stripNUL(x)
+		}
+		return out
+	}
+	return v
 }
 
 // ExtractJSON returns the JSON object embedded in a syslog line (or the line itself).
@@ -263,6 +384,9 @@ func (l *Listener) markMalformed(msg string) {
 
 // HandleLine parses one syslog/EVE line and stores what it carries.
 func (l *Listener) HandleLine(ctx context.Context, line string) {
+	if l.Firewall != nil && l.Firewall.Handle(line) {
+		return
+	}
 	js, ok := ExtractJSON(line)
 	if !ok {
 		// A line that opens an EVE record ('{"…') but has no matching close is a truncated
@@ -275,6 +399,7 @@ func (l *Listener) HandleLine(ctx context.Context, line string) {
 		}
 		return
 	}
+	js = cleanJSON(js)
 	var ev Event
 	if err := json.Unmarshal([]byte(js), &ev); err != nil {
 		l.markMalformed("malformed/truncated event (" + err.Error() + ")")
@@ -310,6 +435,8 @@ func (l *Listener) handle(ctx context.Context, ev *Event, raw string) error {
 		if ev.Alert == nil {
 			return nil
 		}
+		l.alertMu.Lock()
+		defer l.alertMu.Unlock()
 		ts := parseTS(ev.Timestamp, l.Now())
 		e := &db.IDSEvent{TS: ts, Raw: json.RawMessage(raw)}
 		if ev.SrcIP != "" {

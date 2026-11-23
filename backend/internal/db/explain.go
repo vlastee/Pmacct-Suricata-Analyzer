@@ -114,6 +114,7 @@ type DestContext struct {
 	OpenAlerts        int64
 	AlertTitles       []string
 	IDSEvents         int64
+	FirewallBlocks    int64 // blocked new connection attempts toward the destination
 	Notes             int64
 }
 
@@ -155,6 +156,9 @@ FROM alerts WHERE peer = $1::inet AND state <> 'resolved'`, dst).Scan(&c.OpenAle
 		return nil, err
 	}
 	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM ids_events WHERE (dst_ip = $1::inet OR src_ip = $1::inet) AND ts >= $2 AND ts < $3`, dst, w.Since, w.Until).Scan(&c.IDSEvents); err != nil {
+		return nil, err
+	}
+	if c.FirewallBlocks, err = d.FirewallBlockedTo(ctx, dst, w); err != nil {
 		return nil, err
 	}
 	if err := d.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM ip_notes WHERE ip = $1::inet`, dst).Scan(&c.Notes); err != nil {

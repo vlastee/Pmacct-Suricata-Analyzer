@@ -76,7 +76,7 @@
     'Runs read-only with a 30 s timeout, once per interval. Parameters: $1 = window start, $2 = window end (timestamptz), $3 = local networks (cidr[]).',
     'Return a "host" column (the local device; inet or text). Optional: peer, port, title, severity (info|warning|critical), details (jsonb), key (extra dedupe discriminator).',
     'One alert per rule + host + peer + port + key — aggregate with GROUP BY; at most 500 rows per run.',
-    'Tables: acct(ip_src, ip_dst, port_src, port_dst, ip_proto, packets, bytes, stamp_inserted) · ip_info(ip, hostname, country_code, asn, as_org, is_hosting, is_proxy, vt_malicious, …) · ip_names(ip, name, source) · ip_nicknames(ip, nickname, kind) · ids_events(ts, src_ip, dst_ip, dst_port, sid, signature, severity) · threat_lists(net, list) · host_hourly(host, hour, bytes_in, bytes_out, flows, peers, ports) · host_peer_daily(host, peer, day, bytes, flows) · alerts.',
+    'Tables: acct(ip_src, ip_dst, port_src, port_dst, ip_proto, packets, bytes, stamp_inserted) · ip_info(ip, hostname, country_code, asn, as_org, is_hosting, is_proxy, vt_malicious, …) · ip_names(ip, name, source) · ip_nicknames(ip, nickname, kind) · ids_events(ts, src_ip, dst_ip, dst_port, sid, signature, severity) · fw_events(ts, action, direction, iface, tracker, proto_name, src_ip, src_port, dst_ip, dst_port, tcp_flags) · threat_lists(net, list) · host_hourly(host, hour, bytes_in, bytes_out, flows, peers, ports) · host_peer_daily(host, peer, day, bytes, flows) · alerts.',
   ]
   const examples = [
     { title: 'Upload over 1 GB to one external peer', sql: `SELECT ip_src AS host, ip_dst AS peer, SUM(bytes) AS bytes,

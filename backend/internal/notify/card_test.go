@@ -193,3 +193,36 @@ func TestTelegramSendsEveryChunk(t *testing.T) {
 		t.Fatalf("want 2 messages, got %d", len(texts))
 	}
 }
+
+// With the firewall log ingested, the outcome states pfSense's verdict instead of guessing.
+func TestCardFirewallVerdict(t *testing.T) {
+	c := oneWayCtx()
+	tr := int64(1000000103)
+	t0 := time.Date(2026, 11, 22, 20, 1, 0, 0, time.UTC)
+	c.FirewallOn = true
+	c.Firewall = []db.FirewallRuleHit{{Action: "block", Iface: "vtnet1", Direction: "in", Tracker: &tr, Label: "Default deny (IPv4)",
+		Outbound: true, Packets: 14, Attempts: 14, First: t0, Last: t0.Add(13 * time.Minute), Flags: []string{"S"}, Ports: []int32{443}}}
+	out := c.render(c.Alert.LastSeen.Add(time.Minute))
+	for _, want := range []string{
+		`One-way: 14 packets sent, 0 received. pfSense blocked 14 packets (14 new connection attempts) from 10.0.0.120 by "Default deny (IPv4)" (tracker 1000000103) on vtnet1, 2026-11-22 20:01–20:14 UTC (13 min), TCP flags S.`,
+		"Firewall log: https://10.0.0.210:8091/#/firewall?ip=82.147.206.13&since=",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no firewall-log feed") || strings.Contains(out, "inferred") {
+		t.Errorf("guesswork left in a card that has the facts:\n%s", out)
+	}
+	// Ingested but nothing logged: say the peer most likely never answered.
+	c.Firewall = nil
+	if got := c.outcome(); !strings.Contains(got, "pfSense logged no block for this pair") {
+		t.Errorf("no-block outcome: %q", got)
+	}
+	// Inbound blocks and passes are described when there are no flows at all.
+	c.Traffic = nil
+	c.Firewall = []db.FirewallRuleHit{{Action: "block", Outbound: false, Packets: 3}, {Action: "pass", Outbound: true, Packets: 2}}
+	if got := c.outcome(); !strings.Contains(got, "pfSense blocked 3 packets coming from 82.147.206.13") || !strings.Contains(got, "2 packets as passed") {
+		t.Errorf("inbound/pass outcome: %q", got)
+	}
+}

@@ -44,6 +44,11 @@ type alertCtx struct {
 	IDSEvent *db.IDSEvent
 	IDS      []db.IDSPairStat
 
+	// Firewall is what pfSense logged for the pair (host → peer is Outbound); FirewallOn says
+	// the firewall log is being ingested at all, so "no entries" means something.
+	Firewall   []db.FirewallRuleHit
+	FirewallOn bool
+
 	BaseURL string
 }
 
@@ -99,6 +104,11 @@ func (d *Dispatcher) gather(ctx context.Context, a db.Alert, cards map[string]*i
 		warn("history", err)
 		c.IDS, err = d.DB.IDSForPair(ctx, host, peer, c.Window, 3)
 		warn("ids", err)
+		if d.Cfg != nil && d.Cfg.FirewallIngest {
+			c.Firewall, err = d.DB.FirewallForPair(ctx, host, peer, c.Window)
+			warn("firewall", err)
+			c.FirewallOn = err == nil
+		}
 	}
 	if len(c.Procs) > 0 {
 		c.Ident, c.Files = map[string]*db.ProgramIdentity{}, map[string]*db.FileIntel{}
@@ -455,24 +465,37 @@ func (c *alertCtx) render(now time.Time) string {
 	return out
 }
 
-// outcome explains what happened to the traffic, with the counts that prove it.
+// outcome explains what happened to the traffic, with the counts that prove it. Facts come
+// first (Suricata's action, pfSense's log); flow shape is the fallback.
 func (c *alertCtx) outcome() string {
 	if ev := c.IDSEvent; ev != nil && ev.Action != nil && *ev.Action != "" {
+		s := ""
 		switch *ev.Action {
 		case "blocked", "drop", "dropped", "rejected":
-			return "Blocked by Suricata (inline IPS mode)."
+			s = "Blocked by Suricata (inline IPS mode)."
 		default:
-			return fmt.Sprintf("Suricata only alerted (action %q): the traffic was not blocked by the IDS.", *ev.Action)
+			s = fmt.Sprintf("Suricata only alerted (action %q): the traffic was not blocked by the IDS.", *ev.Action)
 		}
+		if fw := c.firewallFacts(true); fw != "" {
+			s += " " + fw
+		}
+		return s
 	}
+	host := strOr(c.Alert.Host)
 	t := c.Traffic
-	if t == nil {
-		return ""
+	if t == nil || t.FlowsOut+t.FlowsIn == 0 {
+		return c.firewallFacts(true)
 	}
 	switch {
 	case t.FlowsOut > 0 && t.FlowsIn == 0:
-		s := fmt.Sprintf("One-way only: %s sent, 0 received. The flow sensor (softflowd on the LAN) sees packets before pfSense filters them, so pfSense either dropped them or the peer never answered (timeout). The analyzer has no firewall-log feed, so it can't tell which.",
-			plural(t.PacketsOut, "packet"))
+		sent := plural(t.PacketsOut, "packet") + " sent, 0 received"
+		if fw := c.firewallFacts(false); fw != "" {
+			return "One-way: " + sent + ". " + fw
+		}
+		if c.FirewallOn {
+			return "One-way: " + sent + ". pfSense logged no block for this pair, so the peer most likely never answered (timeout). pfSense logs the default deny and rules with logging enabled; a rule without logging would not show here."
+		}
+		s := fmt.Sprintf("One-way only: %s. The flow sensor (softflowd on the LAN) sees packets before pfSense filters them, so pfSense either dropped them or the peer never answered (timeout). The analyzer has no firewall-log feed, so it can't tell which.", sent)
 		if tcpOnly(t.Services) && t.FlowsOut > 0 {
 			per := float64(t.PacketsOut) / float64(t.FlowsOut)
 			if per <= 3 {
@@ -481,11 +504,82 @@ func (c *alertCtx) outcome() string {
 		}
 		return s
 	case t.FlowsIn > 0 && t.FlowsOut == 0:
-		return fmt.Sprintf("Inbound only: %s from the peer, nothing sent back by %s (unanswered or dropped).", plural(t.PacketsIn, "packet"), strOr(c.Alert.Host))
-	case t.FlowsIn > 0 && t.FlowsOut > 0:
-		return fmt.Sprintf("Two-way: the connection got through and the peer answered (%s back). Not blocked.", plural(t.PacketsIn, "packet"))
+		s := fmt.Sprintf("Inbound only: %s from the peer, nothing sent back by %s (unanswered or dropped).", plural(t.PacketsIn, "packet"), host)
+		if fw := c.firewallFacts(true); fw != "" {
+			s += " " + fw
+		}
+		return s
+	default:
+		s := fmt.Sprintf("Two-way: the connection got through and the peer answered (%s back). Not blocked.", plural(t.PacketsIn, "packet"))
+		if _, attempts, _ := db.SummarizeBlocks(c.Firewall); attempts > 0 {
+			s += " Other attempts in the window were blocked: " + c.firewallFacts(false)
+		}
+		return s
 	}
-	return ""
+}
+
+// firewallFacts states what pfSense logged for the pair. Outbound blocks first; with
+// anyDir, inbound blocks and logged passes are described too. "" when nothing was logged.
+func (c *alertCtx) firewallFacts(anyDir bool) string {
+	if !c.FirewallOn || len(c.Firewall) == 0 {
+		return ""
+	}
+	var parts []string
+	if pk, attempts, rules := db.SummarizeBlocks(c.Firewall); pk > 0 {
+		s := fmt.Sprintf("pfSense blocked %s", plural(pk, "packet"))
+		if attempts > 0 {
+			s += fmt.Sprintf(" (%s)", plural(attempts, "new connection attempt"))
+		}
+		s += " from " + strOr(c.Alert.Host) + " by " + strings.Join(rules, ", ")
+		if f, l, flags := fwSpan(c.Firewall, true); !f.IsZero() {
+			s += ", " + span(f, l)
+			if len(flags) > 0 {
+				s += ", TCP flags " + strings.Join(flags, "/")
+			}
+		}
+		parts = append(parts, s+".")
+	}
+	if anyDir {
+		var in, pass int64
+		for _, h := range c.Firewall {
+			switch {
+			case h.Action == "pass":
+				pass += h.Packets
+			case !h.Outbound:
+				in += h.Packets
+			}
+		}
+		if in > 0 {
+			parts = append(parts, fmt.Sprintf("pfSense blocked %s coming from %s.", plural(in, "packet"), strOr(c.Alert.Peer)))
+		}
+		if pass > 0 {
+			parts = append(parts, fmt.Sprintf("pfSense logged %s as passed.", plural(pass, "packet")))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// fwSpan returns the first/last time and TCP flags of blocked records in one direction.
+func fwSpan(hits []db.FirewallRuleHit, outbound bool) (first, last time.Time, flags []string) {
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if h.Outbound != outbound || h.Action == "pass" {
+			continue
+		}
+		if first.IsZero() || h.First.Before(first) {
+			first = h.First
+		}
+		if h.Last.After(last) {
+			last = h.Last
+		}
+		for _, f := range h.Flags {
+			if !seen[f] {
+				seen[f] = true
+				flags = append(flags, f)
+			}
+		}
+	}
+	return first, last, flags
 }
 
 func tcpOnly(ss []db.PairService) bool {
@@ -724,6 +818,10 @@ func (c *alertCtx) links() []string {
 			q.Set("port", fmt.Sprint(t.Services[0].Port))
 		}
 		out = append(out, fmt.Sprintf("Raw flows: %s/flows?%s", base, q.Encode()))
+	}
+	if ip := firstNonEmpty(peer, host); ip != "" && c.FirewallOn && len(c.Firewall) > 0 {
+		q := url.Values{"ip": {ip}, "since": win["since"], "until": win["until"]}
+		out = append(out, fmt.Sprintf("Firewall log: %s/firewall?%s", base, q.Encode()))
 	}
 	if ev := c.IDSEvent; ev != nil {
 		out = append(out, fmt.Sprintf("IDS event: %s/ids?event=%d", base, ev.ID))

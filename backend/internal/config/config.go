@@ -91,6 +91,10 @@ type Config struct {
 
 	// Suricata EVE ingest (syslog over UDP/TCP). Empty disables.
 	SuricataListen string
+	// pfSense firewall log (filterlog) lines arriving on the same listener are stored in
+	// fw_events and kept FirewallRetentionDays (0 = forever).
+	FirewallIngest        bool
+	FirewallRetentionDays int
 
 	// Notifications.
 	NotifyWebhookURL    string
@@ -362,6 +366,13 @@ func Load() (*Config, error) {
 		c.Gateways = append(c.Gateways, a)
 	}
 	c.SuricataListen = env("SURICATA_LISTEN", "")
+	c.FirewallIngest = envBool("FIREWALL_INGEST", true)
+	if c.FirewallRetentionDays, err = envInt("FIREWALL_RETENTION_DAYS", 30); err != nil {
+		return nil, err
+	}
+	if c.FirewallRetentionDays < 0 {
+		return nil, fmt.Errorf("FIREWALL_RETENTION_DAYS must be 0 (keep forever) or more")
+	}
 
 	c.NotifyWebhookURL = env("NOTIFY_WEBHOOK_URL", "")
 	c.NotifyNtfyURL = env("NOTIFY_NTFY_URL", "")
