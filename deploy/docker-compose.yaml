@@ -93,7 +93,7 @@ services:
       #   LOCAL_NETWORKS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,203.0.113.10/32
       LOCAL_NETWORKS: ${LOCAL_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       GATEWAYS: 10.0.0.1           # pfSense — exempt from DNS/beaconing rules
-      PUBLIC_URL: http://10.0.0.210:8090
+      PUBLIC_URL: ${PUBLIC_URL:-http://10.0.0.210:8090}
       ENRICH_ENABLED: "true"
       ENRICH_INTERVAL: 5m
       ENRICH_LOOKBACK: 24h
