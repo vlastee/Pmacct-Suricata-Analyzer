@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type IDSEvent, type IDSListener, type IDSSignatureStat } from '../lib/api'
+  import { api, type IDSEvent, type IDSListener, type FirewallIngest, type IDSSignatureStat } from '../lib/api'
   import { currentRange, router } from '../lib/router.svelte'
   import { fmtAgo, fmtCompact, fmtTime } from '../lib/format'
   import IPLabel from '../lib/components/IPLabel.svelte'
@@ -12,6 +12,7 @@
   let sigs = $state<IDSSignatureStat[]>([])
   let enabled = $state(false)
   let listener = $state<IDSListener | null>(null)
+  let firewall = $state<FirewallIngest | null>(null)
   let lastStored = $state<string | null>(null) // newest Suricata-derived row in the DB; survives restarts
   let error = $state<string | null>(null)
   let loading = $state(false)
@@ -61,7 +62,7 @@
         api.idsEvents(r, { ip: q.get('ip') ?? undefined, sid: Number(q.get('sid') ?? 0) || undefined, limit: 300 }),
         api.idsSummary(r),
       ])
-      events = ev.items; sigs = sm.items; enabled = sm.enabled; listener = sm.listener ?? null; lastStored = sm.last_stored_event ?? null
+      events = ev.items; sigs = sm.items; enabled = sm.enabled; listener = sm.listener ?? null; firewall = sm.firewall ?? null; lastStored = sm.last_stored_event ?? null
       const id = Number(q.get('event') ?? 0)
       if (id > 0) {
         if (focus?.id !== id) {
@@ -101,7 +102,13 @@
         listening on {listener.listen}{#if listener.started}&nbsp;since {fmtTime(listener.started)}{/if}
         · {fmtCompact(listener.received)} events · {fmtCompact(listener.alerts)} alerts · {fmtCompact(listener.names)} names learned
         {#if listener.ignored}· {fmtCompact(listener.ignored)} non-Suricata syslog lines{/if}
+        {#if firewall}· <span title="pfSense filterlog records stored in fw_events">{fmtCompact(firewall.stored)} firewall log records stored{#if firewall.last_event}, last {fmtAgo(firewall.last_event)}{/if}</span>
+          {#if firewall.malformed}· {fmtCompact(firewall.malformed)} unparsable{/if}
+          {#if firewall.overflow || firewall.failed}· <span class="secondary">{fmtCompact(firewall.overflow + firewall.failed)} firewall records lost</span>{/if}
+        {/if}
         {#if listener.dropped}· <span class="secondary">{fmtCompact(listener.dropped)} dropped (DB errors)</span>{/if}
+        {#if listener.overflow}· <span class="secondary" title="Lines discarded because the ingest queue was full (the database could not keep up)">{fmtCompact(listener.overflow)} dropped (queue full)</span>{/if}
+        {#if listener.queued && listener.queue_cap && listener.queued > listener.queue_cap / 10}· {fmtCompact(listener.queued)} queued{/if}
       </span>
       {#if listener.last_error}
         <span class="badge critical" title={listener.last_error}>last error{#if listener.last_error_at} {fmtAgo(listener.last_error_at)}{/if}: {listener.last_error.slice(0, 80)}</span>

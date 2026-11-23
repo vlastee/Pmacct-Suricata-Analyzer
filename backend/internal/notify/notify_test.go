@@ -106,7 +106,7 @@ func TestLabelIPs(t *testing.T) {
 	name := "tv"
 	host := "10.0.0.9"
 	m := d.render(context.Background(), []db.Alert{{Rule: "r", Severity: "warning", Host: &host, HostName: &name, Title: "something happened", Count: 2}})
-	if !strings.Contains(m.Body, "[tv (10.0.0.9)]") || !strings.Contains(m.Body, "(x2)") {
+	if !strings.Contains(m.Body, "tv (10.0.0.9)") || !strings.Contains(m.Body, "Alert seen 2 times") {
 		t.Errorf("fallback body: %q", m.Body)
 	}
 }

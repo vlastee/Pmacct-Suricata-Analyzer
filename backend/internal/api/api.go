@@ -21,6 +21,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/config"
 	"github.com/deezave/pmacct-analyzer/backend/internal/db"
 	"github.com/deezave/pmacct-analyzer/backend/internal/feeds"
+	"github.com/deezave/pmacct-analyzer/backend/internal/firewall"
 	"github.com/deezave/pmacct-analyzer/backend/internal/notify"
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
@@ -39,6 +40,7 @@ type Server struct {
 	Feeds    *feeds.Fetcher     // nil when no feeds configured
 	Notifier *notify.Dispatcher // nil when no channels configured
 	Suricata *suricata.Listener // nil when not listening
+	Firewall *firewall.Writer   // nil when firewall-log ingest is off
 	TLS      *tlsca.Manager     // built-in HTTPS identity (nil when disabled or using certificate files)
 	Auth     *auth.Service      // nil disables authentication
 	Now      func() time.Time
@@ -113,6 +115,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/ids/events", s.idsEvents)
 	mux.HandleFunc("GET /api/v1/ids/events/{id}", s.idsEvent)
 	mux.HandleFunc("GET /api/v1/ids/summary", s.idsSummary)
+	mux.HandleFunc("GET /api/v1/firewall/summary", s.firewallSummary)
+	mux.HandleFunc("GET /api/v1/firewall/events", s.firewallEvents)
+	mux.HandleFunc("GET /api/v1/firewall/rules", s.firewallRules)
+	mux.HandleFunc("PUT /api/v1/firewall/rules/{tracker}", s.adminOnly(s.setFirewallRule))
 	mux.HandleFunc("GET /api/v1/ips/{ip}/names", s.ipNames)
 	mux.HandleFunc("GET /api/v1/ips/{ip}/notes", s.listIPNotes)
 	mux.HandleFunc("POST /api/v1/ips/{ip}/notes", s.addIPNote)
@@ -554,8 +560,15 @@ func (s *Server) hostDetail(w http.ResponseWriter, r *http.Request) {
 			sum.Risk = &rk
 		}
 	}
+	var fw *db.FirewallHostReport
+	if s.Firewall != nil {
+		if fw, err = s.DB.FirewallForHost(ctx, ip, win, 15); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"host": sum, "kind": kind, "peers": peers, "ports": ports, "timeseries": series, "alerts": alerts, "ids_events": ids, "hourly": hourly,
+		"host": sum, "kind": kind, "peers": peers, "ports": ports, "timeseries": series, "alerts": alerts, "ids_events": ids, "hourly": hourly, "firewall": fw,
 		"window": map[string]any{"since": win.Since, "until": win.Until, "interval_seconds": int(interval.Seconds())},
 	})
 }
@@ -1216,6 +1229,9 @@ func (s *Server) idsSummary(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"items": items, "total": total, "enabled": s.Suricata != nil}
 	if s.Suricata != nil {
 		out["listener"] = s.Suricata.Stats()
+		if s.Firewall != nil {
+			out["firewall"] = s.Firewall.Stats()
+		}
 		if last, err := s.DB.LastIDSActivity(r.Context()); err == nil && last != nil {
 			out["last_stored_event"] = last
 		}

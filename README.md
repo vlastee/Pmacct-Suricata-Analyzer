@@ -143,6 +143,8 @@ docker compose logs -f analyzer            # Ctrl-C to stop following
 | `FILE_VT_REFRESH_AFTER` | `720h` | re-check a file's VirusTotal report after this |
 | `MHR_ENABLED` | `true` | Team Cymru Malware Hash Registry (DNS, no key) |
 | `SURICATA_LISTEN` | – | syslog listen address for Suricata EVE (e.g. `:5514`); empty disables |
+| `FIREWALL_INGEST` | `true` | store pfSense firewall log (filterlog) lines arriving on `SURICATA_LISTEN` in `fw_events` |
+| `FIREWALL_RETENTION_DAYS` | `30` | days of firewall log kept (pruned daily); `0` keeps everything |
 | `NOTIFY_MIN_SEVERITY` | `critical` | minimum severity delivered to notification channels (startup default; changeable on the Enrichment page) |
 | `NOTIFY_DIGEST` / `NOTIFY_QUIET_HOURS` / `NOTIFY_RENOTIFY_AFTER` | `0` / – / `24h` | batch window / silent hours (`23-7`) / re-notify interval |
 | `NOTIFY_NTFY_URL`, `NOTIFY_GOTIFY_*`, `NOTIFY_TELEGRAM_*`, `NOTIFY_SLACK_WEBHOOK_URL`, `NOTIFY_WEBHOOK_URL`, `NOTIFY_SMTP_*` | – | notification channels (configure any subset) |

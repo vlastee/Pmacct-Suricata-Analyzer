@@ -57,6 +57,9 @@
   }
   // notes journal
   let notes = $state<IPNote[]>([])
+  // Busy peers (CDNs, telemetry ingest) collect dozens of names: show a few, wrap long ones.
+  const NAMES_SHOWN = 6
+  let showAllNames = $state(false)
   let noteInput2 = $state('')
   let noteMsg = $state('')
   let nickNote = $state<string | null>(null)
@@ -258,9 +261,15 @@
         </div>
       {/if}
       {#if info?.names?.length}
-        <div class="small" style="margin-bottom:.5rem">Names: {#each info.names as n, i}{#if i}, {/if}<span class="mono" title="{n.source} · {n.hits}× · {fmtTime(n.last_seen)}">{n.name}</span>{/each}</div>
+        <div class="small names">Names:
+          {#each showAllNames ? info.names : info.names.slice(0, NAMES_SHOWN) as n}<span class="mono name" title="{n.source} · {n.hits}× · {fmtTime(n.last_seen)}">{n.name}</span>{/each}
+          {#if info.names.length > NAMES_SHOWN}<button class="link small" onclick={() => (showAllNames = !showAllNames)}>{showAllNames ? 'show fewer' : `+${info.names.length - NAMES_SHOWN} more`}</button>{/if}
+        </div>
       {:else if h.names?.length}
-        <div class="small" style="margin-bottom:.5rem">Names: {#each h.names as n, i}{#if i}, {/if}<span class="mono">{n}</span>{/each}</div>
+        <div class="small names">Names:
+          {#each showAllNames ? h.names : h.names.slice(0, NAMES_SHOWN) as n}<span class="mono name">{n}</span>{/each}
+          {#if h.names.length > NAMES_SHOWN}<button class="link small" onclick={() => (showAllNames = !showAllNames)}>{showAllNames ? 'show fewer' : `+${h.names.length - NAMES_SHOWN} more`}</button>{/if}
+        </div>
       {/if}
       {#if info?.lists?.length}
         <div class="row small" style="margin-bottom:.5rem"><span class="badge critical">⛔ threat lists</span> {info.lists.join(', ')}</div>
@@ -344,6 +353,38 @@
     </div>
   {/if}
 
+  {#if data.firewall && (data.firewall.blocked_out + data.firewall.blocked_in + data.firewall.passed) > 0}
+    {@const fw = data.firewall}
+    <div class="card overflow" style="margin-top:1rem">
+      <h3>Firewall
+        <span class="small muted">
+          {#if fw.blocked_out}· <span class="secondary">{fmtCompact(fw.blocked_out_tries)} outbound attempts blocked</span>{#if fw.blocked_out > fw.blocked_out_tries} (+{fmtCompact(fw.blocked_out - fw.blocked_out_tries)} stray packets){/if}{/if}
+          {#if fw.blocked_in}· {fmtCompact(fw.blocked_in)} inbound packets blocked{/if}
+          {#if fw.passed}· {fmtCompact(fw.passed)} logged as passed{/if}
+        </span>
+      </h3>
+      <div class="small muted" style="margin-bottom:.4rem">
+        {#each fw.rules as r, i}{#if i}; {/if}{r.outbound ? 'out' : 'in'} {r.action} by {r.label ?? (r.tracker != null ? 'tracker ' + r.tracker : 'unknown rule')} on {r.iface || '?'} ×{fmtCompact(r.packets)}{/each}
+      </div>
+      <table>
+        <thead><tr><th>Peer</th><th>Dir</th><th>Action</th><th class="num">Records</th><th class="num" title="New connection attempts">Attempts</th><th>Ports</th><th>Last</th></tr></thead>
+        <tbody>
+          {#each fw.peers as p}
+            <tr>
+              <td><IPLabel ip={p.peer} nickname={p.nickname ?? null} /></td>
+              <td class="small">{p.outbound ? '→ out' : '← in'}</td>
+              <td><span class="badge {p.action === 'pass' ? 'good' : 'warning'}">{p.action}</span></td>
+              <td class="num mono">{fmtCompact(p.packets)}</td><td class="num mono">{fmtCompact(p.attempts)}</td>
+              <td class="mono small">{p.ports.join(', ') || '–'}</td>
+              <td class="small muted">{fmtAgo(p.last)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <a class="small" href={router.href('/firewall', { ip })}>Firewall log for {ip} →</a>
+    </div>
+  {/if}
+
   <div class="grid wide-left" style="margin-top:1rem">
     <div class="card overflow">
       <h3>Peers ({data.peers.length})</h3>
@@ -386,6 +427,9 @@
 {/if}
 
 <style>
+  .names { margin-bottom: .5rem; overflow-wrap: anywhere; min-width: 0; }
+  .names .name:not(:last-of-type)::after { content: ','; margin-right: .35rem; }
+  .names button.link { background: none; border: none; padding: 0 0 0 .35rem; color: var(--link, var(--series-1)); cursor: pointer; }
   .notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; max-height: 360px; overflow: auto; }
   .notes li { border-top: 1px solid var(--border); padding-top: .4rem; }
   .notes .body { white-space: pre-wrap; }

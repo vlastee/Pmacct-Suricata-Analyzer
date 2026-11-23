@@ -71,7 +71,7 @@ export interface ExplainDestination {
   hostname?: string; names: string[]; asn?: string; org?: string; country?: string; hosting: boolean; proxy: boolean
   infra: { class: string; label: string; note: string }; lists: string[]; vt_malicious: number; reputation: string[]
   other_programs: string[]; other_program_count: number; other_hosts: number; open_alerts: number; alert_titles: string[]
-  ids_events: number; notes: number; trusted?: string; beacon?: { contacts: number; avg_gap_min: number; gap_cv: number }; flags: string[]
+  ids_events: number; firewall_blocks?: number; notes: number; trusted?: string; beacon?: { contacts: number; avg_gap_min: number; gap_cv: number }; flags: string[]
 }
 export interface ExplainReport {
   program: { name: string; exe: string; user: string; container?: string; os?: string; machine?: string; hashes: string[]; hosts: string[]; agents: number; conns: number; destinations: number
@@ -110,8 +110,31 @@ export interface IDSEvent {
 }
 export interface IDSSignatureStat { sid: number; signature: string; category: string | null; severity: number | null; count: number; sources: number; last_seen: string }
 export interface IDSTypeStat { type: string; count: number; last: string; used?: string }
+export interface FirewallTop { key: string; nickname?: string; label?: string; expected?: boolean; iface?: string; action?: string; packets: number; attempts: number; peers: number; last: string }
+export interface FirewallSummary {
+  total: number; blocked: number; passed: number; attempts: number; local_blocked: number
+  sources: FirewallTop[]; destinations: FirewallTop[]; ports: FirewallTop[]; rules: FirewallTop[]
+  series: { t: string; blocked: number; passed: number }[]; oldest?: string
+}
+export interface FirewallEvent {
+  ts: string; action: string; direction?: string; iface?: string; tracker?: number; label?: string; proto?: string
+  src?: string; src_nickname?: string; src_port?: number; dst?: string; dst_nickname?: string; dst_port?: number
+  length?: number; tcp_flags?: string; icmp_type?: string; attempt: boolean
+}
+export interface FirewallRuleHit { action: string; iface: string; direction: string; tracker?: number; label?: string; outbound: boolean; packets: number; attempts: number; first: string; last: string; flags: string[]; ports: number[]; peers?: number }
+export interface FirewallHost {
+  blocked_out: number; blocked_out_tries: number; blocked_in: number; blocked_in_tries: number; passed: number
+  rules: FirewallRuleHit[]
+  peers: { peer: string; nickname?: string; outbound: boolean; action: string; packets: number; attempts: number; ports: number[]; trackers: number[]; last: string }[]
+}
+export interface FirewallRuleConf { label?: string; expected?: boolean }
+export interface FirewallQuery { ip?: string; action?: string; iface?: string; port?: string; tracker?: string; attempts?: string; limit?: number }
+export interface FirewallIngest {
+  received: number; stored: number; malformed: number; overflow: number; failed: number; queued: number
+  last_event?: string; last_error?: string; last_error_at?: string
+}
 export interface IDSListener {
-  listen: string; started?: string; received: number; alerts: number; names: number; dropped: number; malformed: number; ignored: number
+  listen: string; started?: string; received: number; alerts: number; names: number; dropped: number; malformed: number; ignored: number; overflow?: number; queued?: number; queue_cap?: number
   last_event?: string; last_error?: string; last_error_at?: string; types: IDSTypeStat[]
 }
 export interface Nickname { ip: string; nickname: string; note: string | null; updated_at: string }
@@ -137,6 +160,7 @@ export interface Overview {
 export interface HostDetail {
   host: HostStat; kind: string; peers: HostStat[]; ports: PortStat[]; timeseries: Bucket[]
   alerts: Alert[]; ids_events: IDSEvent[]; hourly: { hour: string; bytes_in: number; bytes_out: number; flows: number; peers: number }[]
+  firewall?: FirewallHost | null
   window: { since: string; until: string; interval_seconds: number }
 }
 export interface LaneStats {
@@ -224,7 +248,12 @@ export const api = {
   previewCustomRule: (spec: CustomRuleSpec) =>
     request<{ findings: Finding[] }>('/api/v1/rules/custom/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(spec) }),
   idsEvents: (r: Range, o: { ip?: string; sid?: number; limit?: number } = {}) => request<{ items: IDSEvent[] }>(`/api/v1/ids/events${qs({ ...r, ...o })}`),
-  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener; last_stored_event?: string }>(`/api/v1/ids/summary${qs(r)}`),
+  firewallSummary: (r: Range, f: FirewallQuery) =>
+    request<{ summary: FirewallSummary; enabled: boolean; retention_days: number; ingest?: FirewallIngest }>(`/api/v1/firewall/summary${qs({ ...r, ...f })}`),
+  firewallEvents: (r: Range, f: FirewallQuery) => request<{ items: FirewallEvent[] }>(`/api/v1/firewall/events${qs({ ...r, ...f })}`),
+  setFirewallRule: (tracker: string, c: FirewallRuleConf) =>
+    request<{ rules: Record<string, FirewallRuleConf> }>(`/api/v1/firewall/rules/${encodeURIComponent(tracker)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) }),
+  idsSummary: (r: Range) => request<{ items: IDSSignatureStat[]; total: number; enabled: boolean; listener?: IDSListener; firewall?: FirewallIngest; last_stored_event?: string }>(`/api/v1/ids/summary${qs(r)}`),
   idsEvent: (id: number) => request<IDSEvent>(`/api/v1/ids/events/${id}`),
   ipNames: (ip: string) => request<{ items: IPName[] }>(`/api/v1/ips/${encodeURIComponent(ip)}/names`),
   systemStatus: () => request<any>('/api/v1/system/status'),

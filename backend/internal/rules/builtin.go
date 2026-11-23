@@ -20,6 +20,14 @@ func fmtBytes(n int64) string {
 	return ""
 }
 
+// plural renders "1 packet" / "12 packets".
+func plural(n int64, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
 func builtinRules() []*Rule {
 	return []*Rule{
 		{
@@ -209,18 +217,81 @@ func builtinRules() []*Rule {
 					return nil, err
 				}
 				for _, h := range hits {
-					out = append(out, db.Finding{Host: h.Host,
-						Title:   fmt.Sprintf("%s has %d unanswered external peers (e.g. %s)", h.Host, h.Peers, strings.Join(h.Sample, ", ")),
-						Details: map[string]any{"peers": h.Peers, "flows": h.Flows, "sample": h.Sample}})
+					title := fmt.Sprintf("%s has %d unanswered external peers (e.g. %s)", h.Host, h.Peers, strings.Join(h.Sample, ", "))
+					det := map[string]any{"peers": h.Peers, "flows": h.Flows, "sample": h.Sample}
+					if e.Cfg.FirewallIngest {
+						if n, err := e.DB.FirewallBlockedPeers(ctx, h.Host, w); err == nil {
+							det["firewall_blocked_peers"] = n
+							if n > 0 {
+								title += fmt.Sprintf("; pfSense blocked its attempts to %d destinations in that time", n)
+							}
+						}
+					}
+					out = append(out, db.Finding{Host: h.Host, Title: title, Details: det})
 				}
 				flagged, err := e.DB.DetectOneWayFlagged(ctx, w, locals, p.Int("min_malicious"))
 				if err != nil {
 					return nil, err
 				}
 				for _, h := range flagged {
+					// "No reply" means the flow sensor saw packets leave and nothing come back. The
+					// firewall log, when ingested, says whether pfSense dropped them; otherwise say both.
+					result, outcome := "got nothing back (blocked or unanswered)", "one-way: no return traffic seen; firewall drop or no answer"
+					det := map[string]any{"reasons": h.Reasons, "flows": h.Flows, "packets_out": h.Packets, "bytes_out": h.Bytes, "packets_in": 0,
+						"hint": "unanswered attempts toward known-bad infrastructure often mean malware whose callbacks are being blocked"}
+					if e.Cfg.FirewallIngest {
+						if hits, err := e.DB.FirewallForPair(ctx, h.Host, h.Peer, w); err == nil {
+							if pk, attempts, rules := db.SummarizeBlocks(hits); pk > 0 {
+								result = "was blocked by pfSense"
+								outcome = fmt.Sprintf("blocked by pfSense: %s (%s) by %s", plural(pk, "packet"), plural(attempts, "connection attempt"), strings.Join(rules, ", "))
+								det["firewall_blocked_packets"], det["firewall_rules"] = pk, rules
+							} else {
+								result = "got no answer (pfSense logged no block)"
+								outcome = "one-way: no return traffic and no firewall block logged; the peer did not answer"
+							}
+						}
+					}
+					det["outcome"] = outcome
 					out = append(out, db.Finding{Host: h.Host, Peer: h.Peer, Severity: db.SevCritical, Key: "flagged",
-						Title:   fmt.Sprintf("%s tried to reach flagged %s with no reply (%s)", h.Host, h.Peer, strings.Join(h.Reasons, ", ")),
-						Details: map[string]any{"reasons": h.Reasons, "flows": h.Flows, "hint": "unanswered attempts toward known-bad infrastructure often mean malware whose callbacks are being blocked"}})
+						Title: fmt.Sprintf("%s sent %s to flagged %s in %s and %s (%s)",
+							h.Host, plural(h.Packets, "packet"), h.Peer, plural(h.Flows, "flow"), result, strings.Join(h.Reasons, ", ")),
+						Details: det})
+				}
+				return out, nil
+			},
+		},
+		{
+			Name: "fw_blocked", Title: "Outbound connections blocked by the firewall", Severity: db.SevWarning,
+			Description: "pfSense's firewall log shows a local host repeatedly trying new outbound connections that a block rule dropped: malware calling home to blocked infrastructure, a misconfigured device, or software fighting a policy. Stray packets of finished connections (FIN/RST after the state expired) are not counted. Blocks by rules marked expected on the Firewall page never count. Needs the firewall log (FIREWALL_INGEST).",
+			Interval:    5 * time.Minute, Window: 15 * time.Minute,
+			Params: []Param{
+				{"min_attempts", "Blocked new connection attempts by one host within the window", 30},
+				{"min_destinations", "Distinct external destinations among them", 3},
+			},
+			run: func(ctx context.Context, e *Engine, r *Rule, p params, w db.Window) ([]db.Finding, error) {
+				if !e.Cfg.FirewallIngest {
+					return nil, nil
+				}
+				expected, err := e.DB.FirewallExpectedTrackers(ctx)
+				if err != nil {
+					return nil, err
+				}
+				hits, err := e.DB.DetectFirewallBlockedOutbound(ctx, w, e.Cfg.LocalNetworksCIDR(), p.Int("min_attempts"), p.Int("min_destinations"), expected)
+				if err != nil {
+					return nil, err
+				}
+				labels, _ := e.DB.FirewallRuleLabels(ctx)
+				var out []db.Finding
+				for _, h := range hits {
+					rules := make([]string, 0, len(h.Trackers))
+					for _, t := range h.Trackers {
+						rules = append(rules, db.RuleName(labels, &t))
+					}
+					out = append(out, db.Finding{Host: h.Host,
+						Title: fmt.Sprintf("%s had %s to %d destinations blocked by pfSense (e.g. %s)",
+							h.Host, plural(h.Attempts, "new connection"), h.Peers, strings.Join(h.Sample[:min(3, len(h.Sample))], ", ")),
+						Details: map[string]any{"attempts": h.Attempts, "destinations": h.Peers, "sample": h.Sample, "trackers": h.Trackers, "rules": rules,
+							"hint": "if this rule's blocks are intended (a blocklist, a telemetry block), mark it expected on the Firewall page"}})
 				}
 				return out, nil
 			},

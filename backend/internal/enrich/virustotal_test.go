@@ -52,3 +52,25 @@ func TestVirusTotalLookup(t *testing.T) {
 		t.Errorf("401 should error")
 	}
 }
+
+func TestVTDetections(t *testing.T) {
+	got := vtDetections(map[string]vtEngineResult{
+		"Sophos":    {EngineName: "Sophos", Category: "suspicious", Result: "suspicious"},
+		"Kaspersky": {EngineName: "Kaspersky", Category: "malicious", Result: "malware"},
+		"Google":    {EngineName: "Google", Category: "harmless", Result: "clean"},
+		"alpha":     {Category: "malicious", Result: "phishing"}, // engine_name missing: use the key
+		"Bkav":      {EngineName: "Bkav", Category: "undetected", Result: "unrated"},
+	})
+	want := []string{"alpha/malicious/phishing", "Kaspersky/malicious/malware", "Sophos/suspicious/suspicious"}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i, d := range got {
+		if s := d.Engine + "/" + d.Category + "/" + d.Result; s != want[i] {
+			t.Errorf("%d: %s, want %s", i, s, want[i])
+		}
+	}
+	if clean := vtDetections(nil); clean == nil || len(clean) != 0 {
+		t.Errorf("clean result must be an empty, non-nil list: %#v", clean)
+	}
+}

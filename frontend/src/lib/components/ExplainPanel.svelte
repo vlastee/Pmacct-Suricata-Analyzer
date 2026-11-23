@@ -206,8 +206,9 @@
             {#each d.reputation as r}<span class="badge warning">{r}</span>{/each}
             {#if d.open_alerts}<div class="muted">{d.open_alerts} open alert(s): {d.alert_titles.join('; ')}</div>{/if}
             {#if d.ids_events}<div class="muted">{d.ids_events} Suricata event(s)</div>{/if}
+            {#if d.firewall_blocks}<div class="secondary">{d.firewall_blocks} blocked by pfSense</div>{/if}
             {#if d.notes}<div class="muted">{d.notes} note(s)</div>{/if}
-            {#if !d.trusted && !d.lists.length && !d.vt_malicious && !d.reputation.length && !d.open_alerts && !d.ids_events}<span class="muted">clean</span>{/if}
+            {#if !d.trusted && !d.lists.length && !d.vt_malicious && !d.reputation.length && !d.open_alerts && !d.ids_events && !d.firewall_blocks}<span class="muted">clean</span>{/if}
           </td>
           <td class="small">
             {#if d.other_program_count || d.other_hosts}

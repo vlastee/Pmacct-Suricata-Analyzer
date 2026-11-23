@@ -18,6 +18,7 @@ import (
 	"github.com/deezave/pmacct-analyzer/backend/internal/db"
 	"github.com/deezave/pmacct-analyzer/backend/internal/enrich"
 	"github.com/deezave/pmacct-analyzer/backend/internal/feeds"
+	"github.com/deezave/pmacct-analyzer/backend/internal/firewall"
 	"github.com/deezave/pmacct-analyzer/backend/internal/notify"
 	"github.com/deezave/pmacct-analyzer/backend/internal/rules"
 	"github.com/deezave/pmacct-analyzer/backend/internal/scheduler"
@@ -156,6 +157,13 @@ func main() {
 		l := &suricata.Listener{DB: database, Addr: cfg.SuricataListen, IsLocal: cfg.IsLocal}
 		if engine != nil {
 			l.Sink = engine
+		}
+		if cfg.FirewallIngest {
+			fw := &firewall.Writer{Store: database}
+			l.Firewall = fw
+			srv.Firewall = fw
+			go fw.Run(ctx)
+			slog.Info("firewall log ingest enabled", "retention_days", cfg.FirewallRetentionDays)
 		}
 		srv.Suricata = l
 		go func() {

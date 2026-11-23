@@ -78,6 +78,7 @@ type Destination struct {
 	OpenAlerts        int64     `json:"open_alerts"`
 	AlertTitles       []string  `json:"alert_titles"`
 	IDSEvents         int64     `json:"ids_events"`
+	FirewallBlocks    int64     `json:"firewall_blocks"`
 	Notes             int64     `json:"notes"`
 	Trusted           string    `json:"trusted,omitempty"`
 	Beacon            *Beacon   `json:"beacon,omitempty"`
@@ -267,6 +268,7 @@ func (b *Builder) Build(ctx context.Context, req Request) (*Report, error) {
 		if c, err := b.DB.DestinationContextFor(ctx, pd.Dst, key, excl, req.Window); err == nil {
 			d.OtherPrograms, d.OtherProgramCount, d.OtherHosts = c.OtherPrograms, c.OtherProgramCount, c.OtherHosts
 			d.OpenAlerts, d.AlertTitles, d.IDSEvents, d.Notes = c.OpenAlerts, c.AlertTitles, c.IDSEvents, c.Notes
+			d.FirewallBlocks = c.FirewallBlocks
 		}
 		if bc, ok := Beaconish(pd.Minutes); ok {
 			d.Beacon = &bc
@@ -387,6 +389,9 @@ func Assess(rep *Report, now time.Time) {
 		}
 		if !commonPorts[d.Port] && d.Proto == "tcp" && (d.Infra.Class == "hosting" || d.Infra.Class == "unknown" || d.Infra.Class == "isp") {
 			add("info", "%s uses an uncommon port %d/%s on a %s network.", where, d.Port, d.Proto, d.Infra.Label)
+		}
+		if d.FirewallBlocks > 0 {
+			add("warn", "pfSense blocked %d new connection attempt(s) to %s in this window: something on the network is trying to reach it against a firewall rule.", d.FirewallBlocks, d.Dst)
 		}
 		if d.OpenAlerts > 0 {
 			add("warn", "%s already has %d open alert(s): %s.", where, d.OpenAlerts, strings.Join(d.AlertTitles, "; "))

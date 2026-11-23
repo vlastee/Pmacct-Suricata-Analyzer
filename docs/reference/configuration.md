@@ -20,6 +20,8 @@ The ones you will actually touch:
 | `LOLBAS_URL` / `GTFOBINS_URL` | project exports | abusable-binaries catalogues (empty disables) |
 | `FILE_INTEL` / `MHR_ENABLED` / `FILE_VT_REFRESH_AFTER` | `true` / `true` / `720h` | hash look-ups for agent-reported programs |
 | `SURICATA_LISTEN` | – | EVE syslog listener, e.g. `:5514` |
+| `FIREWALL_INGEST` | `true` | store pfSense filterlog lines from the same listener in `fw_events` |
+| `FIREWALL_RETENTION_DAYS` | `30` | firewall log retention in days (`0` = forever) |
 | `RULES_ENABLED` / `RULES_INTERVAL` | `true` / `1m` | detection engine |
 | `GATEWAYS` | – | router IPs exempt from DNS/beaconing rules |
 | `NOTIFY_MIN_SEVERITY` | `critical` | minimum severity delivered (changeable in the UI) |
